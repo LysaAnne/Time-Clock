@@ -184,6 +184,8 @@ Not implemented yet:
 
 Breaks can be handled automatically or manually.
 
+Status: **Intentionally skipped**
+
 Consider:
 
 - Manual break start / stop
@@ -192,9 +194,17 @@ Consider:
 - Paid break support
 - Include or exclude breaks from total work time
 
+Decision:
+
+- Separate break tracking is not needed right now.
+- The app already supports clocking out for breaks and clocking back in afterward.
+- The app also supports unpaid lunch as a setting that adds break time to the required clocked target.
+
 ### 7. Reports
 
 Summaries over longer periods.
+
+Status: **Built in version 0.7.0**
 
 Consider:
 
@@ -208,6 +218,18 @@ Consider:
 - Total actual hours
 - Overtime balance
 - Missing hours balance
+
+Implemented:
+
+- Reports card on the main screen
+- Today report
+- Current week report
+- Current month report
+- Current half-year report
+- Current year report
+- Actual hours
+- Expected hours based on selected workdays and unpaid lunch setting
+- Ahead/missing/on-target balance
 
 ### 8. Overtime Balance
 

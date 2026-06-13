@@ -55,6 +55,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.temporal.TemporalAdjusters
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -141,6 +142,14 @@ data class WorkDayHistory(
     val expectedDuration: Duration,
 ) {
     val balanceDuration: Duration = totalDuration.minus(expectedDuration)
+}
+
+data class WorkReport(
+    val label: String,
+    val actualDuration: Duration,
+    val expectedDuration: Duration,
+) {
+    val balanceDuration: Duration = actualDuration.minus(expectedDuration)
 }
 
 class TimeClockViewModel(application: Application) : AndroidViewModel(application) {
@@ -812,6 +821,7 @@ fun TimeClockScreen(
                     onSave = onManualSessionSave,
                     onCancel = onManualSessionCancel,
                 )
+                ReportsCard(state = state)
                 HistoryCard(
                     state = state,
                     onHistoryDayToggle = onHistoryDayToggle,
@@ -1197,6 +1207,72 @@ private fun ManualEntryCard(
 }
 
 @Composable
+private fun ReportsCard(state: TimeClockUiState) {
+    val reports = buildReports(state)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF6FBF9)),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "Reports",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            reports.forEach { report ->
+                ReportRow(report = report)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReportRow(report: WorkReport) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = report.label,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = formatReportBalance(report),
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (report.balanceDuration.isNegative) {
+                    Color(0xFFB42318)
+                } else {
+                    Color(0xFF0F766E)
+                },
+                fontWeight = FontWeight.Medium,
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "Actual ${formatHoursAndMinutes(report.actualDuration)}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "Expected ${formatHoursAndMinutes(report.expectedDuration)}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
 private fun HistoryCard(
     state: TimeClockUiState,
     onHistoryDayToggle: (LocalDate) -> Unit,
@@ -1444,6 +1520,93 @@ private fun buildHistoryDays(state: TimeClockUiState): List<WorkDayHistory> {
         .sortedByDescending { it.date }
 }
 
+private fun buildReports(state: TimeClockUiState): List<WorkReport> {
+    val today = LocalDate.now()
+    val weekStart = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+    val weekEnd = weekStart.plusDays(6)
+    val monthStart = today.withDayOfMonth(1)
+    val monthEnd = today.withDayOfMonth(today.lengthOfMonth())
+    val halfYearStart = if (today.monthValue <= 6) {
+        LocalDate.of(today.year, 1, 1)
+    } else {
+        LocalDate.of(today.year, 7, 1)
+    }
+    val halfYearEnd = if (today.monthValue <= 6) {
+        LocalDate.of(today.year, 6, 30)
+    } else {
+        LocalDate.of(today.year, 12, 31)
+    }
+    val yearStart = LocalDate.of(today.year, 1, 1)
+    val yearEnd = LocalDate.of(today.year, 12, 31)
+
+    return listOf(
+        buildReport("Today", today, today, state),
+        buildReport("This week", weekStart, weekEnd, state),
+        buildReport("This month", monthStart, monthEnd, state),
+        buildReport("Half year", halfYearStart, halfYearEnd, state),
+        buildReport("This year", yearStart, yearEnd, state),
+    )
+}
+
+private fun buildReport(
+    label: String,
+    startDate: LocalDate,
+    endDate: LocalDate,
+    state: TimeClockUiState,
+): WorkReport {
+    val actualDuration = actualDurationForRange(startDate, endDate, state)
+    val expectedDuration = expectedDurationForRange(startDate, endDate, state)
+
+    return WorkReport(
+        label = label,
+        actualDuration = actualDuration,
+        expectedDuration = expectedDuration,
+    )
+}
+
+private fun actualDurationForRange(
+    startDate: LocalDate,
+    endDate: LocalDate,
+    state: TimeClockUiState,
+): Duration {
+    val zoneId = ZoneId.systemDefault()
+    val rangeStart = startDate.atStartOfDay(zoneId).toInstant()
+    val rangeEnd = endDate.plusDays(1).atStartOfDay(zoneId).toInstant()
+    val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now()) }
+    val sessions = state.completedSessions + listOfNotNull(activeSession)
+
+    return sessions.fold(Duration.ZERO) { total, session ->
+        val overlapStart = maxOf(session.clockIn, rangeStart)
+        val overlapEnd = minOf(session.clockOut, rangeEnd)
+        if (overlapEnd > overlapStart) {
+            total.plus(Duration.between(overlapStart, overlapEnd))
+        } else {
+            total
+        }
+    }
+}
+
+private fun expectedDurationForRange(
+    startDate: LocalDate,
+    endDate: LocalDate,
+    state: TimeClockUiState,
+): Duration {
+    val dailyExpected = state.expectedDailyDuration.plus(
+        if (state.deductUnpaidLunchBreak) state.lunchBreakDuration else Duration.ZERO,
+    )
+    var date = startDate
+    var expected = Duration.ZERO
+
+    while (!date.isAfter(endDate)) {
+        if (date.dayOfWeek in state.workDays) {
+            expected = expected.plus(dailyExpected)
+        }
+        date = date.plusDays(1)
+    }
+
+    return expected
+}
+
 private fun formatHistoryBalance(day: WorkDayHistory): String {
     if (day.expectedDuration == Duration.ZERO) {
         return "No hours expected"
@@ -1453,6 +1616,18 @@ private fun formatHistoryBalance(day: WorkDayHistory): String {
         day.balanceDuration.isNegative -> "${formatHoursAndMinutes(day.balanceDuration.abs())} missing"
         day.balanceDuration == Duration.ZERO -> "On target"
         else -> "${formatHoursAndMinutes(day.balanceDuration)} ahead"
+    }
+}
+
+private fun formatReportBalance(report: WorkReport): String {
+    if (report.expectedDuration == Duration.ZERO) {
+        return "No target"
+    }
+
+    return when {
+        report.balanceDuration.isNegative -> "${formatHoursAndMinutes(report.balanceDuration.abs())} missing"
+        report.balanceDuration == Duration.ZERO -> "On target"
+        else -> "${formatHoursAndMinutes(report.balanceDuration)} ahead"
     }
 }
 
