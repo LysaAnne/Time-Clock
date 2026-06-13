@@ -31,6 +31,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -51,6 +52,7 @@ import java.time.DayOfWeek
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
@@ -73,6 +75,13 @@ class MainActivity : ComponentActivity() {
                     onClockIn = viewModel::clockIn,
                     onClockOut = viewModel::clockOut,
                     onHistoryDayToggle = viewModel::toggleHistoryDay,
+                    onManualDateChange = viewModel::updateManualDate,
+                    onManualClockInChange = viewModel::updateManualClockIn,
+                    onManualClockOutChange = viewModel::updateManualClockOut,
+                    onManualSessionSave = viewModel::saveManualSession,
+                    onManualSessionCancel = viewModel::cancelManualEdit,
+                    onSessionEdit = viewModel::startEditingSession,
+                    onSessionDelete = viewModel::deleteSession,
                     onSettingsExpandedToggle = viewModel::toggleSettingsExpanded,
                     onExpectedDailyHoursChange = viewModel::updateExpectedDailyHours,
                     onExpectedWeeklyHoursChange = viewModel::updateExpectedWeeklyHours,
@@ -110,6 +119,12 @@ data class TimeClockUiState(
     val lastCompletedSession: WorkSession? = null,
     val completedSessions: List<WorkSession> = emptyList(),
     val expandedHistoryDates: Set<LocalDate> = emptySet(),
+    val manualDateInput: String = formatDateInput(LocalDate.now()),
+    val manualClockInInput: String = "",
+    val manualClockOutInput: String = "",
+    val manualEntryError: String? = null,
+    val editingSessionClockInMillis: Long? = null,
+    val editingSessionClockOutMillis: Long? = null,
 )
 
 data class WorkSession(
@@ -166,12 +181,8 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         val session = WorkSession(startedAt, endedAt)
         val completedSessions = (_uiState.value.completedSessions + session).sortedBy { it.clockIn }
 
-        preferences.edit()
-            .remove(KEY_ACTIVE_CLOCK_IN)
-            .putString(KEY_COMPLETED_SESSIONS, encodeSessions(completedSessions))
-            .remove(KEY_LAST_CLOCK_IN)
-            .remove(KEY_LAST_CLOCK_OUT)
-            .apply()
+        saveCompletedSessions(completedSessions)
+        preferences.edit().remove(KEY_ACTIVE_CLOCK_IN).apply()
 
         _uiState.value = withDailySummary(
             _uiState.value.copy(
@@ -181,6 +192,111 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 todayLastClockOut = endedAt,
                 lastCompletedSession = session,
                 completedSessions = completedSessions,
+            ),
+        )
+    }
+
+    fun updateManualDate(input: String) {
+        _uiState.value = _uiState.value.copy(
+            manualDateInput = input.take(10),
+            manualEntryError = null,
+        )
+    }
+
+    fun updateManualClockIn(input: String) {
+        _uiState.value = _uiState.value.copy(
+            manualClockInInput = sanitizeTimeInput(input),
+            manualEntryError = null,
+        )
+    }
+
+    fun updateManualClockOut(input: String) {
+        _uiState.value = _uiState.value.copy(
+            manualClockOutInput = sanitizeTimeInput(input),
+            manualEntryError = null,
+        )
+    }
+
+    fun startEditingSession(session: WorkSession) {
+        val zoneId = ZoneId.systemDefault()
+        val clockIn = session.clockIn.atZone(zoneId)
+        val clockOut = session.clockOut.atZone(zoneId)
+
+        _uiState.value = _uiState.value.copy(
+            manualDateInput = formatDateInput(clockIn.toLocalDate()),
+            manualClockInInput = TIME_INPUT_FORMATTER.format(clockIn.toLocalTime()),
+            manualClockOutInput = TIME_INPUT_FORMATTER.format(clockOut.toLocalTime()),
+            manualEntryError = null,
+            editingSessionClockInMillis = session.clockIn.toEpochMilli(),
+            editingSessionClockOutMillis = session.clockOut.toEpochMilli(),
+        )
+    }
+
+    fun cancelManualEdit() {
+        _uiState.value = _uiState.value.copy(
+            manualDateInput = formatDateInput(LocalDate.now()),
+            manualClockInInput = "",
+            manualClockOutInput = "",
+            manualEntryError = null,
+            editingSessionClockInMillis = null,
+            editingSessionClockOutMillis = null,
+        )
+    }
+
+    fun saveManualSession() {
+        val parsedSession = parseManualSession()
+        if (parsedSession == null) {
+            _uiState.value = _uiState.value.copy(
+                manualEntryError = "Use date YYYY-MM-DD and times like 09:00 and 17:00.",
+            )
+            return
+        }
+
+        if (parsedSession.clockOut <= parsedSession.clockIn) {
+            _uiState.value = _uiState.value.copy(
+                manualEntryError = "Clock out must be after clock in.",
+            )
+            return
+        }
+
+        val editingClockInMillis = _uiState.value.editingSessionClockInMillis
+        val editingClockOutMillis = _uiState.value.editingSessionClockOutMillis
+        val sessionsWithoutEditedItem = _uiState.value.completedSessions.filterNot { session ->
+            editingClockInMillis != null &&
+                editingClockOutMillis != null &&
+                session.clockIn.toEpochMilli() == editingClockInMillis &&
+                session.clockOut.toEpochMilli() == editingClockOutMillis
+        }
+        val completedSessions = (sessionsWithoutEditedItem + parsedSession).sortedBy { it.clockIn }
+
+        saveCompletedSessions(completedSessions)
+        _uiState.value = withDailySummary(
+            _uiState.value.copy(
+                completedSessions = completedSessions,
+                lastCompletedSession = completedSessions.maxByOrNull { it.clockOut },
+                expandedHistoryDates = _uiState.value.expandedHistoryDates + parsedSession.clockIn
+                    .atZone(ZoneId.systemDefault())
+                    .toLocalDate(),
+                manualDateInput = formatDateInput(LocalDate.now()),
+                manualClockInInput = "",
+                manualClockOutInput = "",
+                manualEntryError = null,
+                editingSessionClockInMillis = null,
+                editingSessionClockOutMillis = null,
+            ),
+        )
+    }
+
+    fun deleteSession(session: WorkSession) {
+        val completedSessions = _uiState.value.completedSessions.filterNot {
+            it.clockIn == session.clockIn && it.clockOut == session.clockOut
+        }
+
+        saveCompletedSessions(completedSessions)
+        _uiState.value = withDailySummary(
+            _uiState.value.copy(
+                completedSessions = completedSessions,
+                lastCompletedSession = completedSessions.maxByOrNull { it.clockOut },
             ),
         )
     }
@@ -429,6 +545,14 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private fun saveCompletedSessions(sessions: List<WorkSession>) {
+        preferences.edit()
+            .putString(KEY_COMPLETED_SESSIONS, encodeSessions(sessions))
+            .remove(KEY_LAST_CLOCK_IN)
+            .remove(KEY_LAST_CLOCK_OUT)
+            .apply()
+    }
+
     private fun decodeSessions(encoded: String): List<WorkSession> {
         return encoded.lineSequence()
             .mapNotNull { line ->
@@ -454,6 +578,29 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun sanitizeWholeNumberInput(input: String): String {
         return input.filter { it.isDigit() }
+    }
+
+    private fun sanitizeTimeInput(input: String): String {
+        return input.filter { it.isDigit() || it == ':' }.take(5)
+    }
+
+    private fun parseManualSession(): WorkSession? {
+        val date = runCatching { LocalDate.parse(_uiState.value.manualDateInput) }.getOrNull()
+            ?: return null
+        val clockIn = parseTimeInput(_uiState.value.manualClockInInput) ?: return null
+        val clockOut = parseTimeInput(_uiState.value.manualClockOutInput) ?: return null
+        val zoneId = ZoneId.systemDefault()
+
+        return WorkSession(
+            clockIn = date.atTime(clockIn).atZone(zoneId).toInstant(),
+            clockOut = date.atTime(clockOut).atZone(zoneId).toInstant(),
+        )
+    }
+
+    private fun parseTimeInput(input: String): LocalTime? {
+        return runCatching {
+            LocalTime.parse(input, TIME_INPUT_FORMATTER)
+        }.getOrNull()
     }
 
     private fun String.toDurationOrNull(): Duration? {
@@ -568,6 +715,13 @@ fun TimeClockScreen(
     onClockIn: () -> Unit,
     onClockOut: () -> Unit,
     onHistoryDayToggle: (LocalDate) -> Unit,
+    onManualDateChange: (String) -> Unit,
+    onManualClockInChange: (String) -> Unit,
+    onManualClockOutChange: (String) -> Unit,
+    onManualSessionSave: () -> Unit,
+    onManualSessionCancel: () -> Unit,
+    onSessionEdit: (WorkSession) -> Unit,
+    onSessionDelete: (WorkSession) -> Unit,
     onSettingsExpandedToggle: () -> Unit,
     onExpectedDailyHoursChange: (String) -> Unit,
     onExpectedWeeklyHoursChange: (String) -> Unit,
@@ -650,9 +804,19 @@ fun TimeClockScreen(
                     onLunchBreakMinutesChange = onLunchBreakMinutesChange,
                 )
                 LastSessionCard(session = state.lastCompletedSession)
+                ManualEntryCard(
+                    state = state,
+                    onDateChange = onManualDateChange,
+                    onClockInChange = onManualClockInChange,
+                    onClockOutChange = onManualClockOutChange,
+                    onSave = onManualSessionSave,
+                    onCancel = onManualSessionCancel,
+                )
                 HistoryCard(
                     state = state,
                     onHistoryDayToggle = onHistoryDayToggle,
+                    onSessionEdit = onSessionEdit,
+                    onSessionDelete = onSessionDelete,
                 )
             }
         }
@@ -956,9 +1120,88 @@ private fun LastSessionCard(session: WorkSession?) {
 }
 
 @Composable
+private fun ManualEntryCard(
+    state: TimeClockUiState,
+    onDateChange: (String) -> Unit,
+    onClockInChange: (String) -> Unit,
+    onClockOutChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val isEditing = state.editingSessionClockInMillis != null
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F7FF)),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = if (isEditing) "Edit session" else "Manual entry",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            OutlinedTextField(
+                value = state.manualDateInput,
+                onValueChange = onDateChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Date") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                OutlinedTextField(
+                    value = state.manualClockInInput,
+                    onValueChange = onClockInChange,
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Clock in") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                )
+                OutlinedTextField(
+                    value = state.manualClockOutInput,
+                    onValueChange = onClockOutChange,
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Clock out") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                )
+            }
+            state.manualEntryError?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFB42318),
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                if (isEditing) {
+                    TextButton(onClick = onCancel) {
+                        Text(text = "Cancel")
+                    }
+                }
+                Button(onClick = onSave) {
+                    Text(text = if (isEditing) "Save changes" else "Add session")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun HistoryCard(
     state: TimeClockUiState,
     onHistoryDayToggle: (LocalDate) -> Unit,
+    onSessionEdit: (WorkSession) -> Unit,
+    onSessionDelete: (WorkSession) -> Unit,
 ) {
     val historyDays = buildHistoryDays(state)
 
@@ -988,6 +1231,8 @@ private fun HistoryCard(
                         day = day,
                         expanded = day.date in state.expandedHistoryDates,
                         onToggle = { onHistoryDayToggle(day.date) },
+                        onSessionEdit = onSessionEdit,
+                        onSessionDelete = onSessionDelete,
                     )
                 }
             }
@@ -1000,6 +1245,8 @@ private fun HistoryDayRow(
     day: WorkDayHistory,
     expanded: Boolean,
     onToggle: () -> Unit,
+    onSessionEdit: (WorkSession) -> Unit,
+    onSessionDelete: (WorkSession) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -1042,30 +1289,49 @@ private fun HistoryDayRow(
 
         if (expanded) {
             day.sessions.forEach { session ->
-                HistorySessionRow(session = session)
+                HistorySessionRow(
+                    session = session,
+                    onEdit = { onSessionEdit(session) },
+                    onDelete = { onSessionDelete(session) },
+                )
             }
         }
     }
 }
 
 @Composable
-private fun HistorySessionRow(session: WorkSession) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+private fun HistorySessionRow(
+    session: WorkSession,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.padding(start = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text(
-            text = "${formatTime(session.clockIn)} - ${formatTime(session.clockOut)}",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = formatHoursAndMinutes(session.duration),
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "${formatTime(session.clockIn)} - ${formatTime(session.clockOut)}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = formatHoursAndMinutes(session.duration),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = onEdit) {
+                Text(text = "Edit")
+            }
+            TextButton(onClick = onDelete) {
+                Text(text = "Delete")
+            }
+        }
     }
 }
 
@@ -1206,7 +1472,13 @@ private fun formatTime(instant: Instant): String {
     return TIME_FORMATTER.format(instant.atZone(ZoneId.systemDefault()))
 }
 
+private fun formatDateInput(date: LocalDate): String {
+    return DATE_INPUT_FORMATTER.format(date)
+}
+
 private val TIME_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
+private val TIME_INPUT_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("H:mm")
+private val DATE_INPUT_FORMATTER: DateTimeFormatter = DateTimeFormatter.ISO_LOCAL_DATE
 private val HISTORY_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE, d MMM yyyy")
 private val DEFAULT_DAILY_HOURS_INPUT = "7:30"
 private val DEFAULT_WEEKLY_HOURS_INPUT = "37:30"
@@ -1268,6 +1540,13 @@ private fun ClockedOutPreview() {
             onClockIn = {},
             onClockOut = {},
             onHistoryDayToggle = {},
+            onManualDateChange = {},
+            onManualClockInChange = {},
+            onManualClockOutChange = {},
+            onManualSessionSave = {},
+            onManualSessionCancel = {},
+            onSessionEdit = {},
+            onSessionDelete = {},
             onSettingsExpandedToggle = {},
             onExpectedDailyHoursChange = {},
             onExpectedWeeklyHoursChange = {},
@@ -1307,6 +1586,13 @@ private fun ClockedInPreview() {
             onClockIn = {},
             onClockOut = {},
             onHistoryDayToggle = {},
+            onManualDateChange = {},
+            onManualClockInChange = {},
+            onManualClockOutChange = {},
+            onManualSessionSave = {},
+            onManualSessionCancel = {},
+            onSessionEdit = {},
+            onSessionDelete = {},
             onSettingsExpandedToggle = {},
             onExpectedDailyHoursChange = {},
             onExpectedWeeklyHoursChange = {},

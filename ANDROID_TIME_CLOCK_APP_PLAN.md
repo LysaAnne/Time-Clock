@@ -155,6 +155,8 @@ Implemented:
 
 People forget to clock in or out, so editing is important.
 
+Status: **Built in version 0.5.0**
+
 Consider:
 
 - Add a missed session manually
@@ -163,6 +165,20 @@ Consider:
 - Delete incorrect sessions
 - Add a note explaining manual changes
 - Mark edited entries visually
+
+Implemented:
+
+- Add a missed session manually
+- Edit clock-in time
+- Edit clock-out time
+- Delete incorrect sessions
+- Manual entry validation for date and time format
+- History totals update after adding, editing, or deleting sessions
+
+Not implemented yet:
+
+- Notes explaining manual changes
+- Visual edited-entry marker
 
 ### 6. Break Tracking
 
