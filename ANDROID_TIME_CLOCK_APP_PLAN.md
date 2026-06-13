@@ -70,6 +70,8 @@ Implemented:
 
 Show how much time was worked today.
 
+Status: **Built in version 0.2.0**
+
 Consider:
 
 - Total worked time for the current day
@@ -79,9 +81,21 @@ Consider:
 - Difference between worked hours and expected daily hours
 - Message such as "You need 1h 15m more today" or "You are 35m ahead"
 
+Implemented:
+
+- Total worked time for today
+- Today's completed sessions are saved locally
+- Active session time is included in today's total while clocked in
+- Sessions that cross midnight are counted only for the part that belongs to today
+- Number of today's sessions
+- First clock-in time today
+- Last clock-out time today, or "Active" while clocked in
+
 ### 3. Work Hours Settings
 
 Let the user define their expected work schedule.
+
+Status: **Built in version 0.3.0**
 
 Consider:
 
@@ -90,8 +104,28 @@ Consider:
 - Work days, such as Monday to Friday
 - Optional different hours for different weekdays
 - Lunch break rules
-- Paid or unpaid breaks
+- Unpaid lunch breaks
 - Time zone handling
+
+Implemented:
+
+- Expected hours per workday
+- Expected hours per week
+- Automatic daily-hours calculation from weekly hours and selected workdays
+- Time inputs with hours and minutes, such as `7:30`, `7h30m`, `7 30`, or `450m`
+- Expected weekly hours calculated from selected workdays
+- Workday selection for Monday through Sunday
+- Collapsed settings menu that opens with an expand/collapse button
+- Settings are saved locally
+- Today's summary compares worked time with expected time
+- Ahead/behind message, such as "You need 1h 15m more today"
+- Unpaid lunch deduction
+- Configurable lunch break length
+
+Not implemented yet:
+
+- Different expected hours per weekday
+- More advanced break categories beyond lunch
 
 ### 4. History
 
