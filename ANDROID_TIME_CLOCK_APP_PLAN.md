@@ -1,0 +1,298 @@
+# Android Time Clock App Plan
+
+## Recommended Programming Language
+
+Use **Kotlin**.
+
+Kotlin is the best default choice for a modern Android app because it is officially supported by Google, works beautifully with Android Studio, and is less verbose than Java. It is also a good fit for long-term app growth because modern Android libraries are designed with Kotlin in mind.
+
+Recommended stack:
+
+- **Language:** Kotlin
+- **UI:** Jetpack Compose
+- **Local database:** Room
+- **Architecture:** MVVM
+- **Date/time handling:** kotlinx-datetime or Java Time APIs
+- **Charts:** Vico, MPAndroidChart, or Compose-based charts
+- **Backup/sync later:** Google Drive, Firebase, or custom cloud sync
+
+## Core App Goal
+
+The app should help you clock in and out of work, track worked time over different periods, and compare actual hours against expected work hours.
+
+The app should answer questions like:
+
+- How many hours did I work today?
+- Am I ahead or behind this week?
+- How much overtime have I built up this month?
+- Do I need to stay longer today to meet my target?
+- How much have I worked over the past half year or year?
+
+## Suggested First Version
+
+The first version should be small and reliable:
+
+1. Clock in
+2. Clock out
+3. Show today's worked time
+4. Store work sessions locally on the phone
+5. Show a simple history list
+
+Once that works well, we can add overtime calculations, reports, editing, charts, and reminders.
+
+## Feature Roadmap
+
+### 1. Clock In / Clock Out
+
+Basic start and stop tracking.
+
+Status: **Built in version 0.1.0**
+
+Consider:
+
+- One large clock in / clock out button
+- Show current clocked-in status
+- Show active session duration while clocked in
+- Prevent clocking in twice without clocking out
+- Prevent clocking out if no active session exists
+- Store exact start and end timestamps
+
+Implemented:
+
+- A Compose screen with clock in and clock out actions
+- A live active-session timer
+- Disabled invalid actions based on current clock state
+- Active clock-in timestamp saved locally
+- Last completed session saved locally with exact clock-in and clock-out timestamps
+- Last completed session shown on the main screen
+
+### 2. Daily Summary
+
+Show how much time was worked today.
+
+Consider:
+
+- Total worked time for the current day
+- Number of work sessions today
+- First clock-in time
+- Last clock-out time
+- Difference between worked hours and expected daily hours
+- Message such as "You need 1h 15m more today" or "You are 35m ahead"
+
+### 3. Work Hours Settings
+
+Let the user define their expected work schedule.
+
+Consider:
+
+- Expected hours per day
+- Expected hours per week
+- Work days, such as Monday to Friday
+- Optional different hours for different weekdays
+- Lunch break rules
+- Paid or unpaid breaks
+- Time zone handling
+
+### 4. History
+
+Let the user review previous work sessions.
+
+Consider:
+
+- List of days
+- Expand a day to see individual sessions
+- Search or filter by date
+- Show total hours per day
+- Show overtime or missing time per day
+
+### 5. Manual Editing
+
+People forget to clock in or out, so editing is important.
+
+Consider:
+
+- Add a missed session manually
+- Edit clock-in time
+- Edit clock-out time
+- Delete incorrect sessions
+- Add a note explaining manual changes
+- Mark edited entries visually
+
+### 6. Break Tracking
+
+Breaks can be handled automatically or manually.
+
+Consider:
+
+- Manual break start / stop
+- Automatic unpaid lunch deduction
+- Configurable break length
+- Paid break support
+- Include or exclude breaks from total work time
+
+### 7. Reports
+
+Summaries over longer periods.
+
+Consider:
+
+- Daily report
+- Weekly report
+- Monthly report
+- Half-year report
+- Yearly report
+- Custom date range
+- Total expected hours
+- Total actual hours
+- Overtime balance
+- Missing hours balance
+
+### 8. Overtime Balance
+
+Track whether the user is ahead or behind.
+
+Consider:
+
+- Running overtime balance
+- Daily overtime
+- Weekly overtime
+- Monthly overtime
+- Carry overtime across periods
+- Reset balance from a chosen date
+- Optional starting balance if the user already has overtime hours
+
+### 9. Charts and Visuals
+
+Make the data easier to understand.
+
+Consider:
+
+- Bar chart of hours per day
+- Weekly progress chart
+- Monthly overtime trend
+- Calendar view with color-coded days
+- Green for enough hours, red for missing hours, blue for overtime
+
+### 10. Reminders and Notifications
+
+Help the user remember to clock in or out.
+
+Consider:
+
+- Reminder to clock in near work start time
+- Reminder to clock out near work end time
+- Alert if still clocked in after many hours
+- Location-based reminder when arriving at or leaving work
+- Notification showing active session duration
+
+### 11. Location Features
+
+Optional, but useful for work tracking.
+
+Consider:
+
+- Save clock-in location
+- Save clock-out location
+- Warn if clocking in away from workplace
+- Automatic prompts based on location
+- Privacy-friendly setting to disable location entirely
+
+### 12. Export
+
+Allow the user to take their data elsewhere.
+
+Consider:
+
+- Export to CSV
+- Export to Excel
+- Export monthly report as PDF
+- Share report by email
+- Include notes and edited entries
+
+### 13. Backup and Sync
+
+Protect the data if the phone is lost.
+
+Consider:
+
+- Local-only mode first
+- Manual backup file
+- Google Drive backup
+- Firebase sync
+- Multi-device support
+- Restore from backup
+
+### 14. Calendar Integration
+
+Optional integration with the user's schedule.
+
+Consider:
+
+- Import planned work shifts from calendar
+- Compare calendar shifts against actual hours
+- Add work sessions to calendar
+- Show holidays and days off
+
+### 15. Vacation, Sick Days, and Absence
+
+Useful if the app becomes a complete work-time tracker.
+
+Consider:
+
+- Add vacation days
+- Add sick days
+- Add public holidays
+- Mark days as not expected work days
+- Adjust expected hours automatically
+
+### 16. Data Privacy
+
+Important because work-time data is personal.
+
+Consider:
+
+- Keep data local by default
+- Clear privacy policy if publishing to Google Play
+- Option to delete all data
+- Optional app lock
+- Avoid unnecessary tracking
+
+### 17. Polish and Convenience
+
+Small features that make the app feel good to use.
+
+Consider:
+
+- Dark mode
+- Home screen widget
+- Quick settings tile
+- Wear OS support later
+- Nice empty states
+- Clear error messages
+- Fast startup
+
+## Suggested Build Order
+
+Build the app in this order:
+
+1. Create the Android project
+2. Build the clock in / clock out screen
+3. Save sessions locally
+4. Show today's total
+5. Add history view
+6. Add work-hours settings
+7. Calculate overtime and missing hours
+8. Add editing
+9. Add weekly and monthly reports
+10. Add charts
+11. Add reminders
+12. Add export
+13. Add backup
+
+## First Feature To Build
+
+Start with:
+
+**A single screen with a clock in / clock out button and today's total worked time.**
+
+This gives the app its core value immediately and creates the foundation for every later feature.
