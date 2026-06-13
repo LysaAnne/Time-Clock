@@ -72,6 +72,7 @@ class MainActivity : ComponentActivity() {
                     state = state,
                     onClockIn = viewModel::clockIn,
                     onClockOut = viewModel::clockOut,
+                    onHistoryDayToggle = viewModel::toggleHistoryDay,
                     onSettingsExpandedToggle = viewModel::toggleSettingsExpanded,
                     onExpectedDailyHoursChange = viewModel::updateExpectedDailyHours,
                     onExpectedWeeklyHoursChange = viewModel::updateExpectedWeeklyHours,
@@ -108,6 +109,7 @@ data class TimeClockUiState(
     val todayProgressMessage: String = "",
     val lastCompletedSession: WorkSession? = null,
     val completedSessions: List<WorkSession> = emptyList(),
+    val expandedHistoryDates: Set<LocalDate> = emptySet(),
 )
 
 data class WorkSession(
@@ -115,6 +117,15 @@ data class WorkSession(
     val clockOut: Instant,
 ) {
     val duration: Duration = Duration.between(clockIn, clockOut).coerceAtLeast(Duration.ZERO)
+}
+
+data class WorkDayHistory(
+    val date: LocalDate,
+    val sessions: List<WorkSession>,
+    val totalDuration: Duration,
+    val expectedDuration: Duration,
+) {
+    val balanceDuration: Duration = totalDuration.minus(expectedDuration)
 }
 
 class TimeClockViewModel(application: Application) : AndroidViewModel(application) {
@@ -247,6 +258,17 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
     fun toggleSettingsExpanded() {
         _uiState.value = _uiState.value.copy(
             isSettingsExpanded = !_uiState.value.isSettingsExpanded,
+        )
+    }
+
+    fun toggleHistoryDay(date: LocalDate) {
+        val expandedDates = _uiState.value.expandedHistoryDates
+        _uiState.value = _uiState.value.copy(
+            expandedHistoryDates = if (date in expandedDates) {
+                expandedDates - date
+            } else {
+                expandedDates + date
+            },
         )
     }
 
@@ -545,6 +567,7 @@ fun TimeClockScreen(
     state: TimeClockUiState,
     onClockIn: () -> Unit,
     onClockOut: () -> Unit,
+    onHistoryDayToggle: (LocalDate) -> Unit,
     onSettingsExpandedToggle: () -> Unit,
     onExpectedDailyHoursChange: (String) -> Unit,
     onExpectedWeeklyHoursChange: (String) -> Unit,
@@ -627,6 +650,10 @@ fun TimeClockScreen(
                     onLunchBreakMinutesChange = onLunchBreakMinutesChange,
                 )
                 LastSessionCard(session = state.lastCompletedSession)
+                HistoryCard(
+                    state = state,
+                    onHistoryDayToggle = onHistoryDayToggle,
+                )
             }
         }
     }
@@ -929,6 +956,120 @@ private fun LastSessionCard(session: WorkSession?) {
 }
 
 @Composable
+private fun HistoryCard(
+    state: TimeClockUiState,
+    onHistoryDayToggle: (LocalDate) -> Unit,
+) {
+    val historyDays = buildHistoryDays(state)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "History",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+
+            if (historyDays.isEmpty()) {
+                Text(
+                    text = "No completed work sessions yet",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                historyDays.forEach { day ->
+                    HistoryDayRow(
+                        day = day,
+                        expanded = day.date in state.expandedHistoryDates,
+                        onToggle = { onHistoryDayToggle(day.date) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryDayRow(
+    day: WorkDayHistory,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = HISTORY_DATE_FORMATTER.format(day.date),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "${formatHoursAndMinutes(day.totalDuration)} worked",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = formatHistoryBalance(day),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (day.balanceDuration.isNegative) {
+                        Color(0xFFB42318)
+                    } else {
+                        Color(0xFF0F766E)
+                    },
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+            IconButton(onClick = onToggle) {
+                Icon(
+                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Collapse day" else "Expand day",
+                )
+            }
+        }
+
+        if (expanded) {
+            day.sessions.forEach { session ->
+                HistorySessionRow(session = session)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistorySessionRow(session: WorkSession) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            text = "${formatTime(session.clockIn)} - ${formatTime(session.clockOut)}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = formatHoursAndMinutes(session.duration),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+        )
+    }
+}
+
+@Composable
 private fun TimeStamp(label: String, value: String) {
     Column {
         Text(
@@ -977,6 +1118,13 @@ private fun formatDurationShort(duration: Duration): String {
     }
 }
 
+private fun formatHoursAndMinutes(duration: Duration): String {
+    val seconds = duration.seconds.coerceAtLeast(0)
+    val hours = seconds / 3_600
+    val minutes = (seconds % 3_600) / 60
+    return "${hours}h ${"%02d".format(minutes)}m"
+}
+
 private fun formatDurationInput(duration: Duration): String {
     val totalMinutes = duration.toMinutes().coerceAtLeast(0)
     val hours = totalMinutes / 60
@@ -999,6 +1147,49 @@ private fun formatProgressMessage(
     }
 }
 
+private fun buildHistoryDays(state: TimeClockUiState): List<WorkDayHistory> {
+    val zoneId = ZoneId.systemDefault()
+
+    return state.completedSessions
+        .groupBy { it.clockIn.atZone(zoneId).toLocalDate() }
+        .map { (date, sessions) ->
+            val sortedSessions = sessions.sortedBy { it.clockIn }
+            val totalDuration = sortedSessions.fold(Duration.ZERO) { total, session ->
+                total.plus(session.duration)
+            }
+            val unpaidLunch = if (state.deductUnpaidLunchBreak && date.dayOfWeek in state.workDays) {
+                state.lunchBreakDuration
+            } else {
+                Duration.ZERO
+            }
+            val expectedDuration = if (date.dayOfWeek in state.workDays) {
+                state.expectedDailyDuration.plus(unpaidLunch)
+            } else {
+                Duration.ZERO
+            }
+
+            WorkDayHistory(
+                date = date,
+                sessions = sortedSessions,
+                totalDuration = totalDuration,
+                expectedDuration = expectedDuration,
+            )
+        }
+        .sortedByDescending { it.date }
+}
+
+private fun formatHistoryBalance(day: WorkDayHistory): String {
+    if (day.expectedDuration == Duration.ZERO) {
+        return "No hours expected"
+    }
+
+    return when {
+        day.balanceDuration.isNegative -> "${formatHoursAndMinutes(day.balanceDuration.abs())} missing"
+        day.balanceDuration == Duration.ZERO -> "On target"
+        else -> "${formatHoursAndMinutes(day.balanceDuration)} ahead"
+    }
+}
+
 private fun DayOfWeek.shortLabel(): String {
     return when (this) {
         DayOfWeek.MONDAY -> "Mon"
@@ -1016,6 +1207,7 @@ private fun formatTime(instant: Instant): String {
 }
 
 private val TIME_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
+private val HISTORY_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE, d MMM yyyy")
 private val DEFAULT_DAILY_HOURS_INPUT = "7:30"
 private val DEFAULT_WEEKLY_HOURS_INPUT = "37:30"
 private val DEFAULT_DAILY_DURATION = Duration.ofHours(7).plusMinutes(30)
@@ -1061,9 +1253,21 @@ private fun ClockedOutPreview() {
                     clockIn = Instant.now().minus(Duration.ofHours(3)),
                     clockOut = Instant.now().minus(Duration.ofMinutes(20)),
                 ),
+                completedSessions = listOf(
+                    WorkSession(
+                        clockIn = Instant.now().minus(Duration.ofDays(1)).minus(Duration.ofHours(8)),
+                        clockOut = Instant.now().minus(Duration.ofDays(1)),
+                    ),
+                    WorkSession(
+                        clockIn = Instant.now().minus(Duration.ofHours(3)),
+                        clockOut = Instant.now().minus(Duration.ofMinutes(20)),
+                    ),
+                ),
+                expandedHistoryDates = setOf(LocalDate.now()),
             ),
             onClockIn = {},
             onClockOut = {},
+            onHistoryDayToggle = {},
             onSettingsExpandedToggle = {},
             onExpectedDailyHoursChange = {},
             onExpectedWeeklyHoursChange = {},
@@ -1093,9 +1297,16 @@ private fun ClockedInPreview() {
                     clockIn = Instant.now().minus(Duration.ofHours(5)),
                     clockOut = Instant.now().minus(Duration.ofHours(1)),
                 ),
+                completedSessions = listOf(
+                    WorkSession(
+                        clockIn = Instant.now().minus(Duration.ofHours(5)),
+                        clockOut = Instant.now().minus(Duration.ofHours(1)),
+                    ),
+                ),
             ),
             onClockIn = {},
             onClockOut = {},
+            onHistoryDayToggle = {},
             onSettingsExpandedToggle = {},
             onExpectedDailyHoursChange = {},
             onExpectedWeeklyHoursChange = {},

@@ -131,6 +131,8 @@ Not implemented yet:
 
 Let the user review previous work sessions.
 
+Status: **Built in version 0.4.0**
+
 Consider:
 
 - List of days
@@ -138,6 +140,16 @@ Consider:
 - Search or filter by date
 - Show total hours per day
 - Show overtime or missing time per day
+
+Implemented:
+
+- History card on the main screen
+- Completed sessions grouped by day
+- Newest days first
+- Expand/collapse each day
+- Individual clock-in and clock-out times for each session
+- Total worked time per day
+- Ahead/missing/on-target status per day based on current work-hour settings
 
 ### 5. Manual Editing
 

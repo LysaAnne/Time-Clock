@@ -4,7 +4,7 @@ This is a Kotlin Android app for tracking work clock-in and clock-out sessions.
 
 ## Current Version
 
-Features 1, 2, and 3 are implemented:
+Features 1, 2, 3, and 4 are implemented:
 
 - Clock in
 - Clock out
@@ -26,6 +26,10 @@ Features 1, 2, and 3 are implemented:
 - Collapse settings behind an expand/collapse button
 - Deduct unpaid lunch from credited work time
 - Set lunch break length in minutes
+- Review completed sessions in History
+- Expand a day to see individual sessions
+- See total worked time per day
+- See whether a day is ahead, missing time, or on target
 
 Expected time inputs accept formats like `7:30`, `7h30m`, `7 30`, `450m`, or decimal hours like `7.5`.
 
@@ -40,6 +44,6 @@ Expected time inputs accept formats like `7:30`, `7h30m`, `7 30`, `450m`, or dec
 
 The next recommended feature is:
 
-**History.**
+**Manual editing.**
 
-That will let you review previous work sessions by day.
+That will let you fix missed or incorrect clock-in and clock-out entries.
