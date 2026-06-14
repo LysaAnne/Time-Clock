@@ -264,6 +264,8 @@ Implemented:
 
 Make the data easier to understand.
 
+Status: **Built in version 0.9.0**
+
 Consider:
 
 - Bar chart of hours per day
@@ -272,7 +274,73 @@ Consider:
 - Calendar view with color-coded days
 - Green for enough hours, red for missing hours, blue for overtime
 
-### 10. Reminders and Notifications
+Implemented:
+
+- Charts card on the main screen
+- Last 7 days hours bar chart
+- Weekly progress bar comparing actual and expected hours
+- Monthly overtime trend grouped by week
+- Current month color-coded day grid
+- Red for missing hours, green for on-target days, and blue for overtime days
+
+### 10. Work Profiles
+
+Support multiple workplaces or jobs, each with its own tracking rules and overtime balance.
+
+Status: **Planned**
+
+Goal:
+
+- Let the user create a profile for each workplace
+- Let the user switch between active work profiles
+- Keep time sessions, settings, reports, charts, and overtime balances separated by profile
+- Prevent overtime balance from counting days before the user started at that workplace
+
+Consider:
+
+- Workplace name, such as company, department, client, or job title
+- Tracking start date for the workplace
+- Active profile selector near the top of the main screen
+- Create, rename, switch, and delete work profiles
+- Prevent deleting a profile without confirmation
+- Choose one default profile for app startup
+- Separate clock-in status per profile
+- Clear warning if the user is clocked in on one profile and switches to another
+- Profile-specific expected daily hours
+- Profile-specific expected weekly hours
+- Profile-specific workdays
+- Profile-specific unpaid lunch setting
+- Profile-specific lunch break length
+- Profile-specific overtime balance start date
+- Profile-specific starting overtime balance
+- Profile-specific reports, history, charts, and overtime range
+- Manual sessions assigned to the currently selected profile
+- Future export grouped by profile
+
+Recommended first version:
+
+- Create a default profile automatically, such as "My workplace"
+- Add profile name and employment/tracking start date
+- Move all current settings into the active profile
+- Filter history, reports, charts, and overtime balance by active profile
+- Make overtime calculations start no earlier than the profile tracking start date
+- Add a simple profile switcher
+
+Important behavior:
+
+- If the tracking start date is `2026-06-01`, the app should not count expected hours before `2026-06-01`.
+- If a profile has no sessions before its start date, the overtime balance should not become negative just because the person was not employed there yet.
+- All existing settings should belong to the selected profile, not the whole app.
+- When switching profiles, the screen should immediately update totals, reports, charts, history, and overtime balance for that workplace.
+
+Not needed in the first version:
+
+- Cloud sync between profiles
+- Company logos
+- Team or manager sharing
+- Different pay rates
+
+### 11. Reminders and Notifications
 
 Help the user remember to clock in or out.
 
@@ -284,7 +352,7 @@ Consider:
 - Location-based reminder when arriving at or leaving work
 - Notification showing active session duration
 
-### 11. Location Features
+### 12. Location Features
 
 Optional, but useful for work tracking.
 
@@ -296,7 +364,7 @@ Consider:
 - Automatic prompts based on location
 - Privacy-friendly setting to disable location entirely
 
-### 12. Export
+### 13. Export
 
 Allow the user to take their data elsewhere.
 
@@ -308,7 +376,7 @@ Consider:
 - Share report by email
 - Include notes and edited entries
 
-### 13. Backup and Sync
+### 14. Backup and Sync
 
 Protect the data if the phone is lost.
 
@@ -321,7 +389,7 @@ Consider:
 - Multi-device support
 - Restore from backup
 
-### 14. Calendar Integration
+### 15. Calendar Integration
 
 Optional integration with the user's schedule.
 
@@ -332,7 +400,7 @@ Consider:
 - Add work sessions to calendar
 - Show holidays and days off
 
-### 15. Vacation, Sick Days, and Absence
+### 16. Vacation, Sick Days, and Absence
 
 Useful if the app becomes a complete work-time tracker.
 
@@ -344,7 +412,7 @@ Consider:
 - Mark days as not expected work days
 - Adjust expected hours automatically
 
-### 16. Data Privacy
+### 17. Data Privacy
 
 Important because work-time data is personal.
 
@@ -356,7 +424,7 @@ Consider:
 - Optional app lock
 - Avoid unnecessary tracking
 
-### 17. Polish and Convenience
+### 18. Polish and Convenience
 
 Small features that make the app feel good to use.
 
@@ -384,9 +452,10 @@ Build the app in this order:
 8. Add editing
 9. Add weekly and monthly reports
 10. Add charts
-11. Add reminders
-12. Add export
-13. Add backup
+11. Add work profiles
+12. Add reminders
+13. Add export
+14. Add backup
 
 ## First Feature To Build
 

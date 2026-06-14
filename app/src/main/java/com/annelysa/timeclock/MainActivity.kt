@@ -5,15 +5,21 @@ import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -178,6 +184,40 @@ enum class OvertimeRange(val label: String) {
     SIX_MONTHS("6 months"),
     TWELVE_MONTHS("12 months"),
     ALL_TIME("All time"),
+}
+
+data class DailyChartEntry(
+    val date: LocalDate,
+    val actualDuration: Duration,
+    val expectedDuration: Duration,
+) {
+    val balanceDuration: Duration = actualDuration.minus(expectedDuration)
+}
+
+data class MonthlyTrendEntry(
+    val label: String,
+    val balanceDuration: Duration,
+)
+
+data class CalendarDayVisual(
+    val date: LocalDate,
+    val actualDuration: Duration,
+    val expectedDuration: Duration,
+) {
+    val status: DayVisualStatus = when {
+        expectedDuration == Duration.ZERO && actualDuration == Duration.ZERO -> DayVisualStatus.NO_TARGET
+        expectedDuration == Duration.ZERO -> DayVisualStatus.OVERTIME
+        actualDuration < expectedDuration -> DayVisualStatus.MISSING
+        actualDuration == expectedDuration -> DayVisualStatus.ON_TARGET
+        else -> DayVisualStatus.OVERTIME
+    }
+}
+
+enum class DayVisualStatus {
+    MISSING,
+    ON_TARGET,
+    OVERTIME,
+    NO_TARGET,
 }
 
 class TimeClockViewModel(application: Application) : AndroidViewModel(application) {
@@ -924,6 +964,7 @@ fun TimeClockScreen(
                     onCancel = onManualSessionCancel,
                 )
                 ReportsCard(state = state)
+                ChartsCard(state = state)
                 OvertimeBalanceCard(
                     state = state,
                     onOvertimeRangeChange = onOvertimeRangeChange,
@@ -1404,6 +1445,298 @@ private fun ReportRow(report: WorkReport) {
 }
 
 @Composable
+private fun ChartsCard(state: TimeClockUiState) {
+    val dailyEntries = buildDailyChartEntries(state)
+    val weekReport = buildCurrentWeekReport(state)
+    val monthlyTrend = buildMonthlyTrendEntries(state)
+    val calendarDays = buildCalendarVisualDays(state)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF4F8FF)),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                text = "Charts",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            DailyHoursChart(entries = dailyEntries)
+            WeeklyProgressChart(report = weekReport)
+            MonthlyTrendChart(entries = monthlyTrend)
+            CalendarVisualGrid(days = calendarDays)
+        }
+    }
+}
+
+@Composable
+private fun DailyHoursChart(entries: List<DailyChartEntry>) {
+    val maxMinutes = entries
+        .flatMap { listOf(it.actualDuration.toMinutes(), it.expectedDuration.toMinutes()) }
+        .maxOrNull()
+        ?.coerceAtLeast(60L)
+        ?: 60L
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = "Last 7 days",
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(150.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            entries.forEach { entry ->
+                DailyBar(
+                    entry = entry,
+                    maxMinutes = maxMinutes,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DailyBar(
+    entry: DailyChartEntry,
+    maxMinutes: Long,
+    modifier: Modifier = Modifier,
+) {
+    val actualFraction = (entry.actualDuration.toMinutes().toFloat() / maxMinutes).coerceIn(0.02f, 1f)
+    val expectedFraction = (entry.expectedDuration.toMinutes().toFloat() / maxMinutes).coerceIn(0f, 1f)
+    val barColor = colorForBalance(entry.balanceDuration, entry.expectedDuration)
+
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(94.dp),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(expectedFraction)
+                    .background(Color(0xFFE5E7EB), RoundedCornerShape(6.dp)),
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(actualFraction)
+                    .background(barColor, RoundedCornerShape(6.dp)),
+            )
+        }
+        Text(
+            text = entry.date.dayOfWeek.shortLabel(),
+            style = MaterialTheme.typography.labelMedium,
+            textAlign = TextAlign.Center,
+        )
+        Text(
+            text = formatDurationShort(entry.actualDuration),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+private fun WeeklyProgressChart(report: WorkReport) {
+    val expectedMinutes = report.expectedDuration.toMinutes().coerceAtLeast(1L)
+    val progress = (report.actualDuration.toMinutes().toFloat() / expectedMinutes).coerceIn(0f, 1f)
+    val progressColor = colorForBalance(report.balanceDuration, report.expectedDuration)
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "This week",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = formatSignedBalance(report.balanceDuration),
+                style = MaterialTheme.typography.bodyMedium,
+                color = progressColor,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(16.dp)
+                .background(Color(0xFFE5E7EB), RoundedCornerShape(8.dp)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(progress)
+                    .background(progressColor, RoundedCornerShape(8.dp)),
+            )
+        }
+        Text(
+            text = "${formatHoursAndMinutes(report.actualDuration)} of ${formatHoursAndMinutes(report.expectedDuration)}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun MonthlyTrendChart(entries: List<MonthlyTrendEntry>) {
+    val maxMagnitude = entries
+        .maxOfOrNull { it.balanceDuration.abs().toMinutes() }
+        ?.coerceAtLeast(60L)
+        ?: 60L
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = "Monthly overtime trend",
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        entries.forEach { entry ->
+            MonthlyTrendRow(entry = entry, maxMagnitude = maxMagnitude)
+        }
+    }
+}
+
+@Composable
+private fun MonthlyTrendRow(
+    entry: MonthlyTrendEntry,
+    maxMagnitude: Long,
+) {
+    val magnitude = (entry.balanceDuration.abs().toMinutes().toFloat() / maxMagnitude).coerceIn(0.04f, 1f)
+    val barColor = colorForBalance(entry.balanceDuration, Duration.ZERO)
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = entry.label,
+            modifier = Modifier.width(48.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(10.dp)
+                .background(Color(0xFFE5E7EB), RoundedCornerShape(5.dp)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(magnitude)
+                    .background(barColor, RoundedCornerShape(5.dp)),
+            )
+        }
+        Text(
+            text = formatSignedBalance(entry.balanceDuration),
+            modifier = Modifier.width(72.dp),
+            style = MaterialTheme.typography.labelMedium,
+            textAlign = TextAlign.End,
+            color = barColor,
+            fontWeight = FontWeight.Medium,
+        )
+    }
+}
+
+@Composable
+private fun CalendarVisualGrid(days: List<CalendarDayVisual>) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "This month",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            CalendarLegend()
+        }
+        days.chunked(7).forEach { week ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                week.forEach { day ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .aspectRatio(1f)
+                            .background(colorForDayStatus(day.status), RoundedCornerShape(6.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = day.date.dayOfMonth.toString(),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = colorForDayText(day.status),
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+                repeat(7 - week.size) {
+                    Spacer(
+                        modifier = Modifier
+                            .weight(1f)
+                            .aspectRatio(1f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalendarLegend() {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        LegendDot(color = Color(0xFFB42318), label = "Missing")
+        LegendDot(color = Color(0xFF0F766E), label = "OK")
+        LegendDot(color = Color(0xFF2563EB), label = "Over")
+    }
+}
+
+@Composable
+private fun LegendDot(color: Color, label: String) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(8.dp)
+                .height(8.dp)
+                .background(color, CircleShape),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
 private fun OvertimeBalanceCard(
     state: TimeClockUiState,
     onOvertimeRangeChange: (OvertimeRange) -> Unit,
@@ -1814,6 +2147,71 @@ private fun startDateForOvertimeRange(
     }
 }
 
+private fun buildDailyChartEntries(state: TimeClockUiState): List<DailyChartEntry> {
+    val today = LocalDate.now()
+    return (6L downTo 0L).map { daysAgo ->
+        val date = today.minusDays(daysAgo)
+        DailyChartEntry(
+            date = date,
+            actualDuration = actualDurationForRange(date, date, state),
+            expectedDuration = expectedDurationForRange(date, date, state),
+        )
+    }
+}
+
+private fun buildCurrentWeekReport(state: TimeClockUiState): WorkReport {
+    val today = LocalDate.now()
+    val weekStart = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+    val weekEnd = weekStart.plusDays(6)
+    return buildReport("This week", weekStart, weekEnd, state)
+}
+
+private fun buildMonthlyTrendEntries(state: TimeClockUiState): List<MonthlyTrendEntry> {
+    val today = LocalDate.now()
+    val monthStart = today.withDayOfMonth(1)
+    val monthEnd = today.withDayOfMonth(today.lengthOfMonth())
+    val entries = mutableListOf<MonthlyTrendEntry>()
+    var weekStart = monthStart
+    var weekNumber = 1
+
+    while (!weekStart.isAfter(monthEnd)) {
+        val weekEnd = minOf(weekStart.plusDays(6), monthEnd)
+        val actualDuration = actualDurationForRange(weekStart, weekEnd, state)
+        val expectedDuration = expectedDurationForRange(weekStart, weekEnd, state)
+        entries.add(
+            MonthlyTrendEntry(
+                label = "W$weekNumber",
+                balanceDuration = actualDuration.minus(expectedDuration),
+            ),
+        )
+        weekStart = weekEnd.plusDays(1)
+        weekNumber += 1
+    }
+
+    return entries
+}
+
+private fun buildCalendarVisualDays(state: TimeClockUiState): List<CalendarDayVisual> {
+    val today = LocalDate.now()
+    val monthStart = today.withDayOfMonth(1)
+    val monthEnd = today.withDayOfMonth(today.lengthOfMonth())
+    val days = mutableListOf<CalendarDayVisual>()
+    var date = monthStart
+
+    while (!date.isAfter(monthEnd)) {
+        days.add(
+            CalendarDayVisual(
+                date = date,
+                actualDuration = actualDurationForRange(date, date, state),
+                expectedDuration = expectedDurationForRange(date, date, state),
+            ),
+        )
+        date = date.plusDays(1)
+    }
+
+    return days
+}
+
 private fun buildReport(
     label: String,
     startDate: LocalDate,
@@ -1894,6 +2292,36 @@ private fun formatReportBalance(report: WorkReport): String {
         report.balanceDuration.isNegative -> "${formatHoursAndMinutes(report.balanceDuration.abs())} missing"
         report.balanceDuration == Duration.ZERO -> "On target"
         else -> "${formatHoursAndMinutes(report.balanceDuration)} ahead"
+    }
+}
+
+private fun colorForBalance(
+    balanceDuration: Duration,
+    expectedDuration: Duration,
+): Color {
+    return when {
+        expectedDuration == Duration.ZERO && balanceDuration > Duration.ZERO -> Color(0xFF2563EB)
+        balanceDuration.isNegative -> Color(0xFFB42318)
+        balanceDuration == Duration.ZERO -> Color(0xFF0F766E)
+        else -> Color(0xFF2563EB)
+    }
+}
+
+private fun colorForDayStatus(status: DayVisualStatus): Color {
+    return when (status) {
+        DayVisualStatus.MISSING -> Color(0xFFFEE4E2)
+        DayVisualStatus.ON_TARGET -> Color(0xFFD1FAE5)
+        DayVisualStatus.OVERTIME -> Color(0xFFDBEAFE)
+        DayVisualStatus.NO_TARGET -> Color(0xFFF3F4F6)
+    }
+}
+
+private fun colorForDayText(status: DayVisualStatus): Color {
+    return when (status) {
+        DayVisualStatus.MISSING -> Color(0xFFB42318)
+        DayVisualStatus.ON_TARGET -> Color(0xFF047857)
+        DayVisualStatus.OVERTIME -> Color(0xFF1D4ED8)
+        DayVisualStatus.NO_TARGET -> Color(0xFF4B5563)
     }
 }
 
