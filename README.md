@@ -4,7 +4,7 @@ This is a Kotlin Android app for tracking work clock-in and clock-out sessions.
 
 ## Current Version
 
-Features 1, 2, 3, 4, 5, 7, 8, and 9 are implemented. Feature 6 was intentionally skipped.
+Features 1, 2, 3, 4, 5, 7, 8, 9, and 10 are implemented. Feature 6 was intentionally skipped.
 
 - Clock in
 - Clock out
@@ -44,6 +44,11 @@ Features 1, 2, 3, 4, 5, 7, 8, and 9 are implemented. Feature 6 was intentionally
 - See current weekly progress against expected hours
 - See this month's weekly overtime trend
 - See a color-coded month view for missing, on-target, and overtime days
+- Create work profiles for different workplaces or jobs
+- Switch between work profiles
+- Set a tracking start date for each workplace
+- Keep sessions, settings, reports, charts, and overtime balances separate per profile
+- Prevent expected hours from counting before the active workplace's tracking start date
 
 Expected time inputs accept formats like `7:30`, `7h30m`, `7 30`, `450m`, or decimal hours like `7.5`.
 Starting overtime balance accepts formats like `2:30` or `-1:15` and is applied to the all-time overtime balance.
@@ -60,6 +65,6 @@ Manual sessions use date format `YYYY-MM-DD` and time format `HH:mm`.
 
 The next recommended feature is:
 
-**Work profiles.**
+**UI simplification.**
 
-That will let you track multiple workplaces separately, with each workplace having its own start date, settings, history, reports, charts, and overtime balance.
+That will keep all functionality but split the app into clearer Today, History, Insights, and Settings areas.

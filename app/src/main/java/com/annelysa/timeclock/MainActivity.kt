@@ -81,6 +81,12 @@ class MainActivity : ComponentActivity() {
                     state = state,
                     onClockIn = viewModel::clockIn,
                     onClockOut = viewModel::clockOut,
+                    onProfileSelect = viewModel::selectProfile,
+                    onProfileNameChange = viewModel::updateActiveProfileName,
+                    onProfileStartDateChange = viewModel::updateActiveProfileStartDate,
+                    onNewProfileNameChange = viewModel::updateNewProfileName,
+                    onNewProfileStartDateChange = viewModel::updateNewProfileStartDate,
+                    onProfileCreate = viewModel::createProfile,
                     onHistoryDayToggle = viewModel::toggleHistoryDay,
                     onManualDateChange = viewModel::updateManualDate,
                     onManualClockInChange = viewModel::updateManualClockIn,
@@ -105,6 +111,13 @@ class MainActivity : ComponentActivity() {
 }
 
 data class TimeClockUiState(
+    val workProfiles: List<WorkProfile> = listOf(DEFAULT_WORK_PROFILE),
+    val activeProfileId: String = DEFAULT_WORK_PROFILE.id,
+    val activeProfileNameInput: String = DEFAULT_WORK_PROFILE.name,
+    val activeProfileStartDateInput: String = formatDateInput(DEFAULT_WORK_PROFILE.trackingStartDate),
+    val newProfileNameInput: String = "",
+    val newProfileStartDateInput: String = formatDateInput(LocalDate.now()),
+    val profileError: String? = null,
     val isClockedIn: Boolean = false,
     val clockInTime: Instant? = null,
     val activeDuration: Duration = Duration.ZERO,
@@ -139,6 +152,12 @@ data class TimeClockUiState(
     val startingOvertimeBalanceInput: String = "0:00",
     val selectedOvertimeRange: OvertimeRange = OvertimeRange.ALL_TIME,
     val overtimeSettingsError: String? = null,
+)
+
+data class WorkProfile(
+    val id: String,
+    val name: String,
+    val trackingStartDate: LocalDate,
 )
 
 data class WorkSession(
@@ -235,12 +254,118 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun selectProfile(profileId: String) {
+        if (profileId == _uiState.value.activeProfileId) return
+        val profiles = _uiState.value.workProfiles
+        val selectedProfile = profiles.firstOrNull { it.id == profileId } ?: return
+
+        preferences.edit()
+            .putString(KEY_ACTIVE_PROFILE_ID, profileId)
+            .apply()
+
+        _uiState.value = buildStateForProfile(
+            profiles = profiles,
+            activeProfile = selectedProfile,
+            newProfileNameInput = _uiState.value.newProfileNameInput,
+            newProfileStartDateInput = _uiState.value.newProfileStartDateInput,
+        )
+    }
+
+    fun updateActiveProfileName(input: String) {
+        val sanitizedInput = sanitizeProfileName(input)
+        val updatedProfile = _uiState.value.activeProfile.copy(
+            name = sanitizedInput.ifBlank { DEFAULT_WORK_PROFILE_NAME },
+        )
+        val updatedProfiles = _uiState.value.workProfiles.replaceProfile(updatedProfile)
+
+        saveProfiles(updatedProfiles)
+        _uiState.value = _uiState.value.copy(
+            workProfiles = updatedProfiles,
+            activeProfileNameInput = sanitizedInput,
+            profileError = null,
+        )
+    }
+
+    fun updateActiveProfileStartDate(input: String) {
+        val sanitizedInput = input.take(10)
+        val parsedDate = runCatching { LocalDate.parse(sanitizedInput) }.getOrNull()
+        val error = if (sanitizedInput.length == 10 && parsedDate == null) {
+            "Use date format YYYY-MM-DD."
+        } else {
+            null
+        }
+        val updatedProfiles = parsedDate?.let { date ->
+            val updatedProfile = _uiState.value.activeProfile.copy(trackingStartDate = date)
+            _uiState.value.workProfiles.replaceProfile(updatedProfile)
+        } ?: _uiState.value.workProfiles
+
+        if (parsedDate != null) {
+            saveProfiles(updatedProfiles)
+        }
+
+        _uiState.value = withDailySummary(
+            _uiState.value.copy(
+                workProfiles = updatedProfiles,
+                activeProfileStartDateInput = sanitizedInput,
+                profileError = error,
+            ),
+        )
+    }
+
+    fun updateNewProfileName(input: String) {
+        _uiState.value = _uiState.value.copy(
+            newProfileNameInput = sanitizeProfileName(input),
+            profileError = null,
+        )
+    }
+
+    fun updateNewProfileStartDate(input: String) {
+        _uiState.value = _uiState.value.copy(
+            newProfileStartDateInput = input.take(10),
+            profileError = null,
+        )
+    }
+
+    fun createProfile() {
+        val name = _uiState.value.newProfileNameInput.trim()
+        if (name.isBlank()) {
+            _uiState.value = _uiState.value.copy(profileError = "Add a workplace name first.")
+            return
+        }
+
+        val startDate = runCatching { LocalDate.parse(_uiState.value.newProfileStartDateInput) }.getOrNull()
+        if (startDate == null) {
+            _uiState.value = _uiState.value.copy(profileError = "Use date format YYYY-MM-DD.")
+            return
+        }
+
+        val newProfile = WorkProfile(
+            id = "profile_${System.currentTimeMillis()}",
+            name = name,
+            trackingStartDate = startDate,
+        )
+        val updatedProfiles = _uiState.value.workProfiles + newProfile
+
+        saveProfiles(updatedProfiles)
+        preferences.edit()
+            .putString(KEY_ACTIVE_PROFILE_ID, newProfile.id)
+            .apply()
+
+        _uiState.value = buildStateForProfile(
+            profiles = updatedProfiles,
+            activeProfile = newProfile,
+            newProfileNameInput = "",
+            newProfileStartDateInput = formatDateInput(LocalDate.now()),
+        )
+    }
+
     fun clockIn() {
         if (_uiState.value.isClockedIn) return
 
         val now = Instant.now()
         preferences.edit()
-            .putLong(KEY_ACTIVE_CLOCK_IN, now.toEpochMilli())
+            .putLong(profileKey(KEY_ACTIVE_CLOCK_IN), now.toEpochMilli())
+            .remove(KEY_ACTIVE_CLOCK_IN)
             .apply()
 
         _uiState.value = withDailySummary(
@@ -259,7 +384,10 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         val completedSessions = (_uiState.value.completedSessions + session).sortedBy { it.clockIn }
 
         saveCompletedSessions(completedSessions)
-        preferences.edit().remove(KEY_ACTIVE_CLOCK_IN).apply()
+        preferences.edit()
+            .remove(profileKey(KEY_ACTIVE_CLOCK_IN))
+            .remove(KEY_ACTIVE_CLOCK_IN)
+            .apply()
 
         _uiState.value = withDailySummary(
             _uiState.value.copy(
@@ -384,8 +512,8 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         val weeklyDuration = dailyDuration?.multipliedBy(_uiState.value.workDays.size.toLong())
 
         preferences.edit()
-            .putString(KEY_EXPECTED_DAILY_HOURS, sanitizedInput)
-            .putString(KEY_EXPECTED_WEEKLY_HOURS, weeklyDuration?.let(::formatDurationInput) ?: _uiState.value.expectedWeeklyHoursInput)
+            .putString(profileKey(KEY_EXPECTED_DAILY_HOURS), sanitizedInput)
+            .putString(profileKey(KEY_EXPECTED_WEEKLY_HOURS), weeklyDuration?.let(::formatDurationInput) ?: _uiState.value.expectedWeeklyHoursInput)
             .apply()
 
         _uiState.value = withDailySummary(
@@ -405,8 +533,8 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         val dailyDuration = weeklyDuration?.dividedByWorkdays(_uiState.value.workDays.size)
 
         preferences.edit()
-            .putString(KEY_EXPECTED_WEEKLY_HOURS, sanitizedInput)
-            .putString(KEY_EXPECTED_DAILY_HOURS, dailyDuration?.let(::formatDurationInput) ?: _uiState.value.expectedDailyHoursInput)
+            .putString(profileKey(KEY_EXPECTED_WEEKLY_HOURS), sanitizedInput)
+            .putString(profileKey(KEY_EXPECTED_DAILY_HOURS), dailyDuration?.let(::formatDurationInput) ?: _uiState.value.expectedDailyHoursInput)
             .apply()
 
         _uiState.value = withDailySummary(
@@ -429,9 +557,9 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         preferences.edit()
-            .putString(KEY_WORK_DAYS, encodeWorkDays(updatedDays))
+            .putString(profileKey(KEY_WORK_DAYS), encodeWorkDays(updatedDays))
             .putString(
-                KEY_EXPECTED_DAILY_HOURS,
+                profileKey(KEY_EXPECTED_DAILY_HOURS),
                 _uiState.value.expectedWeeklyDuration.dividedByWorkdays(updatedDays.size)
                     .let(::formatDurationInput),
             )
@@ -467,7 +595,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun toggleUnpaidLunchBreak(enabled: Boolean) {
         preferences.edit()
-            .putBoolean(KEY_DEDUCT_UNPAID_LUNCH_BREAK, enabled)
+            .putBoolean(profileKey(KEY_DEDUCT_UNPAID_LUNCH_BREAK), enabled)
             .apply()
 
         _uiState.value = withDailySummary(
@@ -480,7 +608,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         val minutes = sanitizedInput.toLongOrNull()?.coerceIn(0L, 240L) ?: 0L
 
         preferences.edit()
-            .putString(KEY_LUNCH_BREAK_MINUTES, sanitizedInput)
+            .putString(profileKey(KEY_LUNCH_BREAK_MINUTES), sanitizedInput)
             .apply()
 
         _uiState.value = withDailySummary(
@@ -500,7 +628,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         preferences.edit()
-            .putString(KEY_OVERTIME_START_DATE, sanitizedInput)
+            .putString(profileKey(KEY_OVERTIME_START_DATE), sanitizedInput)
             .apply()
 
         _uiState.value = _uiState.value.copy(
@@ -518,7 +646,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         preferences.edit()
-            .putString(KEY_STARTING_OVERTIME_BALANCE, sanitizedInput)
+            .putString(profileKey(KEY_STARTING_OVERTIME_BALANCE), sanitizedInput)
             .apply()
 
         _uiState.value = _uiState.value.copy(
@@ -529,7 +657,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun updateOvertimeRange(range: OvertimeRange) {
         preferences.edit()
-            .putString(KEY_OVERTIME_RANGE, range.name)
+            .putString(profileKey(KEY_OVERTIME_RANGE), range.name)
             .apply()
 
         _uiState.value = _uiState.value.copy(selectedOvertimeRange = range)
@@ -547,38 +675,89 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun loadInitialState(): TimeClockUiState {
-        val activeClockIn = preferences.getLongOrNull(KEY_ACTIVE_CLOCK_IN)?.let(Instant::ofEpochMilli)
-        val completedSessions = loadCompletedSessions()
-        val expectedDailyHours = preferences.getString(KEY_EXPECTED_DAILY_HOURS, DEFAULT_DAILY_HOURS_INPUT)
+        val profiles = loadProfiles()
+        val savedActiveProfileId = preferences.getString(KEY_ACTIVE_PROFILE_ID, DEFAULT_WORK_PROFILE_ID)
+        val activeProfile = profiles.firstOrNull { it.id == savedActiveProfileId } ?: profiles.first()
+
+        if (savedActiveProfileId != activeProfile.id) {
+            preferences.edit()
+                .putString(KEY_ACTIVE_PROFILE_ID, activeProfile.id)
+                .apply()
+        }
+
+        return buildStateForProfile(
+            profiles = profiles,
+            activeProfile = activeProfile,
+            newProfileNameInput = "",
+            newProfileStartDateInput = formatDateInput(LocalDate.now()),
+        )
+    }
+
+    private fun buildStateForProfile(
+        profiles: List<WorkProfile>,
+        activeProfile: WorkProfile,
+        newProfileNameInput: String,
+        newProfileStartDateInput: String,
+    ): TimeClockUiState {
+        val activeClockIn = preferences.getLongOrNull(profileKey(activeProfile.id, KEY_ACTIVE_CLOCK_IN))
+            .let { activeProfileClockIn ->
+                activeProfileClockIn ?: if (activeProfile.id == DEFAULT_WORK_PROFILE_ID) {
+                    preferences.getLongOrNull(KEY_ACTIVE_CLOCK_IN)
+                } else {
+                    null
+                }
+            }
+            ?.let(Instant::ofEpochMilli)
+        val completedSessions = loadCompletedSessions(activeProfile.id)
+        val expectedDailyHours = getProfileString(activeProfile.id, KEY_EXPECTED_DAILY_HOURS, DEFAULT_DAILY_HOURS_INPUT)
             ?: DEFAULT_DAILY_HOURS_INPUT
         val expectedDailyDuration = expectedDailyHours.toDurationOrNull() ?: DEFAULT_DAILY_DURATION
-        val expectedWeeklyHours = preferences.getString(KEY_EXPECTED_WEEKLY_HOURS, DEFAULT_WEEKLY_HOURS_INPUT)
+        val expectedWeeklyHours = getProfileString(activeProfile.id, KEY_EXPECTED_WEEKLY_HOURS, DEFAULT_WEEKLY_HOURS_INPUT)
             ?: DEFAULT_WEEKLY_HOURS_INPUT
         val expectedWeeklyDuration = expectedWeeklyHours.toDurationOrNull()
             ?: expectedDailyDuration.multipliedBy(DEFAULT_WORK_DAYS.size.toLong())
-        val workDays = preferences.getString(KEY_WORK_DAYS, null)
+        val workDays = getProfileString(activeProfile.id, KEY_WORK_DAYS, null)
             ?.let(::decodeWorkDays)
             ?: DEFAULT_WORK_DAYS
-        val deductUnpaidLunchBreak = preferences.getBoolean(KEY_DEDUCT_UNPAID_LUNCH_BREAK, false)
-        val lunchBreakMinutesInput = preferences.getString(
-            KEY_LUNCH_BREAK_MINUTES,
-            DEFAULT_LUNCH_BREAK_MINUTES_INPUT,
+        val deductUnpaidLunchBreak = getProfileBoolean(
+            profileId = activeProfile.id,
+            key = KEY_DEDUCT_UNPAID_LUNCH_BREAK,
+            defaultValue = false,
+        )
+        val lunchBreakMinutesInput = getProfileString(
+            profileId = activeProfile.id,
+            key = KEY_LUNCH_BREAK_MINUTES,
+            defaultValue = DEFAULT_LUNCH_BREAK_MINUTES_INPUT,
         ) ?: DEFAULT_LUNCH_BREAK_MINUTES_INPUT
         val lunchBreakDuration = Duration.ofMinutes(
             lunchBreakMinutesInput.toLongOrNull()?.coerceIn(0L, 240L) ?: DEFAULT_LUNCH_BREAK_MINUTES,
         )
-        val overtimeStartDateInput = preferences.getString(KEY_OVERTIME_START_DATE, null)
-            ?: formatDateInput(LocalDate.now())
-        val startingOvertimeBalanceInput = preferences.getString(
-            KEY_STARTING_OVERTIME_BALANCE,
-            DEFAULT_STARTING_OVERTIME_BALANCE_INPUT,
+        val overtimeStartDateInput = getProfileString(
+            profileId = activeProfile.id,
+            key = KEY_OVERTIME_START_DATE,
+            defaultValue = formatDateInput(activeProfile.trackingStartDate),
+        ) ?: formatDateInput(activeProfile.trackingStartDate)
+        val startingOvertimeBalanceInput = getProfileString(
+            profileId = activeProfile.id,
+            key = KEY_STARTING_OVERTIME_BALANCE,
+            defaultValue = DEFAULT_STARTING_OVERTIME_BALANCE_INPUT,
         ) ?: DEFAULT_STARTING_OVERTIME_BALANCE_INPUT
-        val selectedOvertimeRange = preferences.getString(KEY_OVERTIME_RANGE, OvertimeRange.ALL_TIME.name)
+        val selectedOvertimeRange = getProfileString(
+            profileId = activeProfile.id,
+            key = KEY_OVERTIME_RANGE,
+            defaultValue = OvertimeRange.ALL_TIME.name,
+        )
             ?.let { value -> runCatching { OvertimeRange.valueOf(value) }.getOrNull() }
             ?: OvertimeRange.ALL_TIME
 
         return withDailySummary(
             TimeClockUiState(
+                workProfiles = profiles,
+                activeProfileId = activeProfile.id,
+                activeProfileNameInput = activeProfile.name,
+                activeProfileStartDateInput = formatDateInput(activeProfile.trackingStartDate),
+                newProfileNameInput = newProfileNameInput,
+                newProfileStartDateInput = newProfileStartDateInput,
                 isClockedIn = activeClockIn != null,
                 clockInTime = activeClockIn,
                 activeDuration = activeClockIn?.let {
@@ -646,15 +825,39 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         )
     }
 
-    private fun loadCompletedSessions(): List<WorkSession> {
-        val savedSessions = preferences.getString(KEY_COMPLETED_SESSIONS, null)
+    private fun loadCompletedSessions(profileId: String = _uiState.value.activeProfileId): List<WorkSession> {
+        val sessionsKey = profileKey(profileId, KEY_COMPLETED_SESSIONS)
+        val savedSessions = preferences.getString(sessionsKey, null)
             ?.let(::decodeSessions)
             .orEmpty()
 
         if (savedSessions.isNotEmpty()) return savedSessions
 
-        val lastClockIn = preferences.getLongOrNull(KEY_LAST_CLOCK_IN)?.let(Instant::ofEpochMilli)
-        val lastClockOut = preferences.getLongOrNull(KEY_LAST_CLOCK_OUT)?.let(Instant::ofEpochMilli)
+        val legacySessions = if (profileId == DEFAULT_WORK_PROFILE_ID) {
+            preferences.getString(KEY_COMPLETED_SESSIONS, null)
+                ?.let(::decodeSessions)
+                .orEmpty()
+        } else {
+            emptyList()
+        }
+
+        if (legacySessions.isNotEmpty()) {
+            preferences.edit()
+                .putString(sessionsKey, encodeSessions(legacySessions))
+                .apply()
+            return legacySessions
+        }
+
+        val lastClockIn = if (profileId == DEFAULT_WORK_PROFILE_ID) {
+            preferences.getLongOrNull(KEY_LAST_CLOCK_IN)?.let(Instant::ofEpochMilli)
+        } else {
+            null
+        }
+        val lastClockOut = if (profileId == DEFAULT_WORK_PROFILE_ID) {
+            preferences.getLongOrNull(KEY_LAST_CLOCK_OUT)?.let(Instant::ofEpochMilli)
+        } else {
+            null
+        }
         val migratedSession = if (lastClockIn != null && lastClockOut != null) {
             listOf(WorkSession(lastClockIn, lastClockOut))
         } else {
@@ -663,7 +866,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
 
         if (migratedSession.isNotEmpty()) {
             preferences.edit()
-                .putString(KEY_COMPLETED_SESSIONS, encodeSessions(migratedSession))
+                .putString(sessionsKey, encodeSessions(migratedSession))
                 .remove(KEY_LAST_CLOCK_IN)
                 .remove(KEY_LAST_CLOCK_OUT)
                 .apply()
@@ -680,7 +883,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun saveCompletedSessions(sessions: List<WorkSession>) {
         preferences.edit()
-            .putString(KEY_COMPLETED_SESSIONS, encodeSessions(sessions))
+            .putString(profileKey(KEY_COMPLETED_SESSIONS), encodeSessions(sessions))
             .remove(KEY_LAST_CLOCK_IN)
             .remove(KEY_LAST_CLOCK_OUT)
             .apply()
@@ -817,6 +1020,109 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         return days.ifEmpty { DEFAULT_WORK_DAYS }
     }
 
+    private fun loadProfiles(): List<WorkProfile> {
+        val savedProfiles = preferences.getString(KEY_WORK_PROFILES, null)
+            ?.let(::decodeProfiles)
+            .orEmpty()
+
+        if (savedProfiles.isNotEmpty()) return savedProfiles
+
+        val legacySessions = preferences.getString(KEY_COMPLETED_SESSIONS, null)
+            ?.let(::decodeSessions)
+            .orEmpty()
+        val earliestSessionDate = legacySessions.minByOrNull { it.clockIn }
+            ?.clockIn
+            ?.atZone(ZoneId.systemDefault())
+            ?.toLocalDate()
+        val legacyOvertimeStartDate = preferences.getString(KEY_OVERTIME_START_DATE, null)
+            ?.let { savedDate -> runCatching { LocalDate.parse(savedDate) }.getOrNull() }
+        val defaultProfile = DEFAULT_WORK_PROFILE.copy(
+            trackingStartDate = earliestSessionDate
+                ?: legacyOvertimeStartDate
+                ?: LocalDate.now(),
+        )
+
+        saveProfiles(listOf(defaultProfile))
+        preferences.edit()
+            .putString(KEY_ACTIVE_PROFILE_ID, defaultProfile.id)
+            .apply()
+
+        return listOf(defaultProfile)
+    }
+
+    private fun saveProfiles(profiles: List<WorkProfile>) {
+        preferences.edit()
+            .putString(KEY_WORK_PROFILES, encodeProfiles(profiles))
+            .apply()
+    }
+
+    private fun encodeProfiles(profiles: List<WorkProfile>): String {
+        return profiles.joinToString(separator = "\n") { profile ->
+            "${profile.id}|${sanitizeProfileName(profile.name).ifBlank { DEFAULT_WORK_PROFILE_NAME }}|${formatDateInput(profile.trackingStartDate)}"
+        }
+    }
+
+    private fun decodeProfiles(encoded: String): List<WorkProfile> {
+        return encoded.lineSequence()
+            .mapNotNull { line ->
+                val parts = line.split("|")
+                val id = parts.getOrNull(0)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val name = parts.getOrNull(1)?.takeIf { it.isNotBlank() } ?: DEFAULT_WORK_PROFILE_NAME
+                val trackingStartDate = parts.getOrNull(2)
+                    ?.let { value -> runCatching { LocalDate.parse(value) }.getOrNull() }
+                    ?: LocalDate.now()
+
+                WorkProfile(
+                    id = id,
+                    name = name,
+                    trackingStartDate = trackingStartDate,
+                )
+            }
+            .toList()
+            .ifEmpty { listOf(DEFAULT_WORK_PROFILE) }
+    }
+
+    private fun getProfileString(
+        profileId: String,
+        key: String,
+        defaultValue: String?,
+    ): String? {
+        val namespacedKey = profileKey(profileId, key)
+        return preferences.getString(
+            namespacedKey,
+            if (profileId == DEFAULT_WORK_PROFILE_ID) preferences.getString(key, defaultValue) else defaultValue,
+        )
+    }
+
+    private fun getProfileBoolean(
+        profileId: String,
+        key: String,
+        defaultValue: Boolean,
+    ): Boolean {
+        val namespacedKey = profileKey(profileId, key)
+        return if (preferences.contains(namespacedKey)) {
+            preferences.getBoolean(namespacedKey, defaultValue)
+        } else if (profileId == DEFAULT_WORK_PROFILE_ID && preferences.contains(key)) {
+            preferences.getBoolean(key, defaultValue)
+        } else {
+            defaultValue
+        }
+    }
+
+    private fun profileKey(key: String): String {
+        return profileKey(_uiState.value.activeProfileId, key)
+    }
+
+    private fun profileKey(profileId: String, key: String): String {
+        return "profile_${profileId}_$key"
+    }
+
+    private fun sanitizeProfileName(input: String): String {
+        return input
+            .filterNot { it == '\n' || it == '\r' || it == '|' }
+            .take(40)
+    }
+
     private fun WorkSession.overlapsDate(date: LocalDate, zoneId: ZoneId): Boolean {
         return durationOnDate(date, zoneId) > Duration.ZERO
     }
@@ -840,6 +1146,8 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
 
     private companion object {
         const val PREFS_NAME = "time_clock_preferences"
+        const val KEY_WORK_PROFILES = "work_profiles"
+        const val KEY_ACTIVE_PROFILE_ID = "active_profile_id"
         const val KEY_ACTIVE_CLOCK_IN = "active_clock_in"
         const val KEY_COMPLETED_SESSIONS = "completed_sessions"
         const val KEY_EXPECTED_DAILY_HOURS = "expected_daily_hours"
@@ -860,6 +1168,12 @@ fun TimeClockScreen(
     state: TimeClockUiState,
     onClockIn: () -> Unit,
     onClockOut: () -> Unit,
+    onProfileSelect: (String) -> Unit,
+    onProfileNameChange: (String) -> Unit,
+    onProfileStartDateChange: (String) -> Unit,
+    onNewProfileNameChange: (String) -> Unit,
+    onNewProfileStartDateChange: (String) -> Unit,
+    onProfileCreate: () -> Unit,
     onHistoryDayToggle: (LocalDate) -> Unit,
     onManualDateChange: (String) -> Unit,
     onManualClockInChange: (String) -> Unit,
@@ -908,6 +1222,16 @@ fun TimeClockScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+
+            WorkProfileCard(
+                state = state,
+                onProfileSelect = onProfileSelect,
+                onProfileNameChange = onProfileNameChange,
+                onProfileStartDateChange = onProfileStartDateChange,
+                onNewProfileNameChange = onNewProfileNameChange,
+                onNewProfileStartDateChange = onNewProfileStartDateChange,
+                onProfileCreate = onProfileCreate,
+            )
 
             ClockActionButton(
                 isClockedIn = state.isClockedIn,
@@ -975,6 +1299,126 @@ fun TimeClockScreen(
                     onSessionEdit = onSessionEdit,
                     onSessionDelete = onSessionDelete,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkProfileCard(
+    state: TimeClockUiState,
+    onProfileSelect: (String) -> Unit,
+    onProfileNameChange: (String) -> Unit,
+    onProfileStartDateChange: (String) -> Unit,
+    onNewProfileNameChange: (String) -> Unit,
+    onNewProfileStartDateChange: (String) -> Unit,
+    onProfileCreate: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF6FF)),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "Work profile",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            WorkProfileSelector(
+                profiles = state.workProfiles,
+                activeProfileId = state.activeProfileId,
+                onProfileSelect = onProfileSelect,
+            )
+            OutlinedTextField(
+                value = state.activeProfileNameInput,
+                onValueChange = onProfileNameChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Workplace name") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+            )
+            OutlinedTextField(
+                value = state.activeProfileStartDateInput,
+                onValueChange = onProfileStartDateChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Tracking start date") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+            )
+            state.profileError?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFB42318),
+                )
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Add another workplace",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                OutlinedTextField(
+                    value = state.newProfileNameInput,
+                    onValueChange = onNewProfileNameChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("New workplace name") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                )
+                OutlinedTextField(
+                    value = state.newProfileStartDateInput,
+                    onValueChange = onNewProfileStartDateChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("New workplace start date") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    Button(onClick = onProfileCreate) {
+                        Text(text = "Add workplace")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkProfileSelector(
+    profiles: List<WorkProfile>,
+    activeProfileId: String,
+    onProfileSelect: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        profiles.chunked(2).forEach { rowProfiles ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                rowProfiles.forEach { profile ->
+                    FilterChip(
+                        selected = profile.id == activeProfileId,
+                        onClick = { onProfileSelect(profile.id) },
+                        label = {
+                            Text(
+                                text = profile.name,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                repeat(2 - rowProfiles.size) {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
             }
         }
     }
@@ -2055,16 +2499,7 @@ private fun buildHistoryDays(state: TimeClockUiState): List<WorkDayHistory> {
             val totalDuration = sortedSessions.fold(Duration.ZERO) { total, session ->
                 total.plus(session.duration)
             }
-            val unpaidLunch = if (state.deductUnpaidLunchBreak && date.dayOfWeek in state.workDays) {
-                state.lunchBreakDuration
-            } else {
-                Duration.ZERO
-            }
-            val expectedDuration = if (date.dayOfWeek in state.workDays) {
-                state.expectedDailyDuration.plus(unpaidLunch)
-            } else {
-                Duration.ZERO
-            }
+            val expectedDuration = expectedDurationForRange(date, date, state)
 
             WorkDayHistory(
                 date = date,
@@ -2107,13 +2542,13 @@ private fun buildReports(state: TimeClockUiState): List<WorkReport> {
 private fun buildOvertimeBalance(state: TimeClockUiState): OvertimeBalance {
     val allTimeStartDate = runCatching { LocalDate.parse(state.overtimeStartDateInput) }
         .getOrNull()
-        ?: LocalDate.now()
+        ?: state.activeProfile.trackingStartDate
     val today = LocalDate.now()
     val startDate = startDateForOvertimeRange(
         range = state.selectedOvertimeRange,
-        allTimeStartDate = allTimeStartDate,
+        allTimeStartDate = maxOf(state.activeProfile.trackingStartDate, allTimeStartDate),
         today = today,
-    )
+    ).coerceAtLeast(state.activeProfile.trackingStartDate)
     val actualDuration = actualDurationForRange(startDate, today, state)
     val expectedDuration = expectedDurationForRange(startDate, today, state)
     val startingBalance = if (state.selectedOvertimeRange == OvertimeRange.ALL_TIME) {
@@ -2234,7 +2669,10 @@ private fun actualDurationForRange(
     state: TimeClockUiState,
 ): Duration {
     val zoneId = ZoneId.systemDefault()
-    val rangeStart = startDate.atStartOfDay(zoneId).toInstant()
+    val effectiveStartDate = startDate.coerceAtLeast(state.activeProfile.trackingStartDate)
+    if (effectiveStartDate.isAfter(endDate)) return Duration.ZERO
+
+    val rangeStart = effectiveStartDate.atStartOfDay(zoneId).toInstant()
     val rangeEnd = endDate.plusDays(1).atStartOfDay(zoneId).toInstant()
     val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now()) }
     val sessions = state.completedSessions + listOfNotNull(activeSession)
@@ -2255,10 +2693,12 @@ private fun expectedDurationForRange(
     endDate: LocalDate,
     state: TimeClockUiState,
 ): Duration {
+    var date = startDate.coerceAtLeast(state.activeProfile.trackingStartDate)
+    if (date.isAfter(endDate)) return Duration.ZERO
+
     val dailyExpected = state.expectedDailyDuration.plus(
         if (state.deductUnpaidLunchBreak) state.lunchBreakDuration else Duration.ZERO,
     )
-    var date = startDate
     var expected = Duration.ZERO
 
     while (!date.isAfter(endDate)) {
@@ -2410,10 +2850,26 @@ private fun formatDateInput(date: LocalDate): String {
     return DATE_INPUT_FORMATTER.format(date)
 }
 
+private val TimeClockUiState.activeProfile: WorkProfile
+    get() = workProfiles.firstOrNull { it.id == activeProfileId } ?: workProfiles.first()
+
+private fun List<WorkProfile>.replaceProfile(updatedProfile: WorkProfile): List<WorkProfile> {
+    return map { profile ->
+        if (profile.id == updatedProfile.id) updatedProfile else profile
+    }
+}
+
 private val TIME_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 private val TIME_INPUT_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("H:mm")
 private val DATE_INPUT_FORMATTER: DateTimeFormatter = DateTimeFormatter.ISO_LOCAL_DATE
 private val HISTORY_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE, d MMM yyyy")
+private const val DEFAULT_WORK_PROFILE_ID = "default_profile"
+private const val DEFAULT_WORK_PROFILE_NAME = "My workplace"
+private val DEFAULT_WORK_PROFILE = WorkProfile(
+    id = DEFAULT_WORK_PROFILE_ID,
+    name = DEFAULT_WORK_PROFILE_NAME,
+    trackingStartDate = LocalDate.now(),
+)
 private val DEFAULT_DAILY_HOURS_INPUT = "7:30"
 private val DEFAULT_WEEKLY_HOURS_INPUT = "37:30"
 private val DEFAULT_DAILY_DURATION = Duration.ofHours(7).plusMinutes(30)
@@ -2485,6 +2941,12 @@ private fun ClockedOutPreview() {
             ),
             onClockIn = {},
             onClockOut = {},
+            onProfileSelect = {},
+            onProfileNameChange = {},
+            onProfileStartDateChange = {},
+            onNewProfileNameChange = {},
+            onNewProfileStartDateChange = {},
+            onProfileCreate = {},
             onHistoryDayToggle = {},
             onManualDateChange = {},
             onManualClockInChange = {},
@@ -2534,6 +2996,12 @@ private fun ClockedInPreview() {
             ),
             onClockIn = {},
             onClockOut = {},
+            onProfileSelect = {},
+            onProfileNameChange = {},
+            onProfileStartDateChange = {},
+            onNewProfileNameChange = {},
+            onNewProfileStartDateChange = {},
+            onProfileCreate = {},
             onHistoryDayToggle = {},
             onManualDateChange = {},
             onManualClockInChange = {},

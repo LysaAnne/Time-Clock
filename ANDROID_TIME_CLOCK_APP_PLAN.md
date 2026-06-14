@@ -287,7 +287,7 @@ Implemented:
 
 Support multiple workplaces or jobs, each with its own tracking rules and overtime balance.
 
-Status: **Planned**
+Status: **Built in version 1.0.0**
 
 Goal:
 
@@ -326,6 +326,28 @@ Recommended first version:
 - Make overtime calculations start no earlier than the profile tracking start date
 - Add a simple profile switcher
 
+Implemented:
+
+- Default work profile created automatically
+- Existing single-workplace data migrates into the default profile
+- Active profile selector near the top of the main screen
+- Edit the active workplace name
+- Edit the active workplace tracking start date
+- Create additional work profiles
+- Switch between work profiles
+- Profile-specific active clock-in state
+- Profile-specific completed sessions
+- Profile-specific expected daily hours
+- Profile-specific expected weekly hours
+- Profile-specific workdays
+- Profile-specific unpaid lunch setting
+- Profile-specific lunch break length
+- Profile-specific overtime start date
+- Profile-specific starting overtime balance
+- Profile-specific overtime balance range
+- History, reports, charts, and overtime balance update when switching profiles
+- Actual and expected calculations start no earlier than the active profile tracking start date
+
 Important behavior:
 
 - If the tracking start date is `2026-06-01`, the app should not count expected hours before `2026-06-01`.
@@ -340,7 +362,59 @@ Not needed in the first version:
 - Team or manager sharing
 - Different pay rates
 
-### 11. Reminders and Notifications
+### 11. UI Simplification
+
+Keep all functionality, but make the app feel calmer and easier to use.
+
+Status: **Planned**
+
+Goal:
+
+- Reduce the overloaded feeling on the main screen
+- Keep clock in and clock out as the fastest action
+- Move detailed reviewing and configuration into clearer areas
+- Make the app feel like a simple daily tool, not one long dashboard
+
+Recommended direction:
+
+- Add bottom navigation with four main tabs
+- Keep the first tab focused on today and the active work session
+- Move history, reports, charts, overtime details, profiles, and settings into their own areas
+
+Suggested tabs:
+
+- **Today:** active work profile, clock in / clock out button, active timer, today summary, small overtime preview
+- **History:** completed sessions, daily history, manual add/edit/delete
+- **Insights:** reports, charts, overtime balance, range selectors
+- **Settings:** work profiles, work hours, workdays, lunch settings, overtime start date, starting balance
+
+Consider:
+
+- Show only the active workplace name on the Today screen, such as `Workplace: Cafe Job`
+- Hide profile editing behind the Settings tab
+- Show a compact overtime preview on Today instead of the full overtime card
+- Keep full overtime range controls under Insights
+- Keep advanced settings collapsed or grouped clearly
+- Avoid putting every card on one scrolling screen
+- Make manual entry available from History instead of always showing it on Today
+- Keep button labels short and predictable
+- Make the first screen useful within a few seconds of opening the app
+
+Alternative lighter version:
+
+- Keep the single-screen layout
+- Collapse Work Profile, Settings, Manual Entry, Reports, Charts, Overtime, and History by default
+- Leave only Clock In / Clock Out, timer, and Today open by default
+
+Recommended first version:
+
+- Add bottom navigation tabs
+- Put the current clocking workflow into Today
+- Move manual entry and session editing into History
+- Move Reports, Charts, and Overtime Balance into Insights
+- Move Work Profiles and Work Hours Settings into Settings
+
+### 12. Reminders and Notifications
 
 Help the user remember to clock in or out.
 
@@ -352,7 +426,7 @@ Consider:
 - Location-based reminder when arriving at or leaving work
 - Notification showing active session duration
 
-### 12. Location Features
+### 13. Location Features
 
 Optional, but useful for work tracking.
 
@@ -364,7 +438,7 @@ Consider:
 - Automatic prompts based on location
 - Privacy-friendly setting to disable location entirely
 
-### 13. Export
+### 14. Export
 
 Allow the user to take their data elsewhere.
 
@@ -376,7 +450,7 @@ Consider:
 - Share report by email
 - Include notes and edited entries
 
-### 14. Backup and Sync
+### 15. Backup and Sync
 
 Protect the data if the phone is lost.
 
@@ -389,7 +463,7 @@ Consider:
 - Multi-device support
 - Restore from backup
 
-### 15. Calendar Integration
+### 16. Calendar Integration
 
 Optional integration with the user's schedule.
 
@@ -400,7 +474,7 @@ Consider:
 - Add work sessions to calendar
 - Show holidays and days off
 
-### 16. Vacation, Sick Days, and Absence
+### 17. Vacation, Sick Days, and Absence
 
 Useful if the app becomes a complete work-time tracker.
 
@@ -412,7 +486,7 @@ Consider:
 - Mark days as not expected work days
 - Adjust expected hours automatically
 
-### 17. Data Privacy
+### 18. Data Privacy
 
 Important because work-time data is personal.
 
@@ -424,7 +498,7 @@ Consider:
 - Optional app lock
 - Avoid unnecessary tracking
 
-### 18. Polish and Convenience
+### 19. Polish and Convenience
 
 Small features that make the app feel good to use.
 
@@ -453,9 +527,10 @@ Build the app in this order:
 9. Add weekly and monthly reports
 10. Add charts
 11. Add work profiles
-12. Add reminders
-13. Add export
-14. Add backup
+12. Simplify the UI with tabs
+13. Add reminders
+14. Add export
+15. Add backup
 
 ## First Feature To Build
 
