@@ -524,7 +524,7 @@ Not implemented yet:
 
 Let each work profile describe how that workplace should calculate time, balance, and money.
 
-Status: **Planned**
+Status: **Built in version 1.4.0**
 
 Goal:
 
@@ -546,7 +546,6 @@ Consider:
 - Optional unpaid break behavior per workplace type
 - Earnings summaries for today, week, month, year, and all time
 - Separate earnings from overtime balance so the UI stays understandable
-- Export reports with both hours and earned money
 
 Recommended first version:
 
@@ -565,11 +564,24 @@ Nice later ideas:
 - Invoice-ready consultant report
 - Project/client tags for self-employed tracking
 
+Implemented:
+
+- Workplace type selector for each work profile
+- Existing profiles default to `Fixed hours + fixed pay`
+- Optional monthly salary for fixed-pay profiles
+- Optional hourly rate for hourly-paid profiles
+- Currency setting per workplace, defaulting to `DKK`
+- `Time tracking only` mode for profiles without pay tracking
+- Earnings card in Insights
+- Hourly-paid earnings use actual clocked hours
+- Fixed-pay earnings estimate salary value from monthly salary and expected weekly hours
+- Pay settings are saved separately for each workplace
+
 ### 15. Home Screen Widgets
 
 Let the user see and control work time without opening the full app.
 
-Status: **Planned**
+Status: **Built in version 1.5.0**
 
 Goal:
 
@@ -606,19 +618,24 @@ Nice later widget ideas:
 - Multi-workplace widget showing balances for several profiles
 - Lock-screen or glance-style status if supported by the Android version
 
-### 16. Location Features
+Implemented:
 
-Optional, but useful for work tracking.
+- Today home-screen widget with active workplace name
+- Clock in / clock out button from the widget
+- Workplace picker when adding a widget
+- Each widget stays tied to its selected workplace even when the active workplace changes in the app
+- Simplified Today widget focused on one large clock in / clock out button
+- Red clock-out state while clocked in
+- Running active-session timer on the Today widget
+- Small worked-today summary on the Today widget
+- Balance home-screen widget with active workplace name
+- Balance widget follows the selected overtime range
+- Widget taps open the app
+- Widgets refresh after app clocking actions, manual edits, absence edits, profile changes, and work-hour setting changes
+- Clock-in from the widget schedules long-session reminders when enabled
+- Clock-out from the widget cancels long-session reminders
 
-Consider:
-
-- Save clock-in location
-- Save clock-out location
-- Warn if clocking in away from workplace
-- Automatic prompts based on location
-- Privacy-friendly setting to disable location entirely
-
-### 17. Export
+### 16. Export
 
 Allow the user to take their data elsewhere.
 
@@ -629,8 +646,9 @@ Consider:
 - Export monthly report as PDF
 - Share report by email
 - Include notes and edited entries
+- Include hours, overtime balance, absence entries, time off, workplace name, and earnings when available
 
-### 18. Backup and Sync
+### 17. Backup and Sync
 
 Protect the data if the phone is lost.
 
@@ -643,18 +661,7 @@ Consider:
 - Multi-device support
 - Restore from backup
 
-### 19. Calendar Integration
-
-Optional integration with the user's schedule.
-
-Consider:
-
-- Import planned work shifts from calendar
-- Compare calendar shifts against actual hours
-- Add work sessions to calendar
-- Show holidays and days off
-
-### 20. Data Privacy
+### 18. Data Privacy
 
 Important because work-time data is personal.
 
@@ -666,7 +673,7 @@ Consider:
 - Optional app lock
 - Avoid unnecessary tracking
 
-### 21. Polish and Convenience
+### 19. Polish and Convenience
 
 Small features that make the app feel good to use.
 

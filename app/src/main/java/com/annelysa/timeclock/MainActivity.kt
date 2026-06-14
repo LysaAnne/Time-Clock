@@ -107,6 +107,10 @@ class MainActivity : ComponentActivity() {
                     onProfileSelect = viewModel::selectProfile,
                     onProfileNameChange = viewModel::updateActiveProfileName,
                     onProfileStartDateChange = viewModel::updateActiveProfileStartDate,
+                    onWorkplaceTypeSelect = viewModel::updateWorkplaceType,
+                    onMonthlySalaryChange = viewModel::updateMonthlySalary,
+                    onHourlyRateChange = viewModel::updateHourlyRate,
+                    onCurrencyChange = viewModel::updateCurrency,
                     onNewProfileNameChange = viewModel::updateNewProfileName,
                     onNewProfileStartDateChange = viewModel::updateNewProfileStartDate,
                     onProfileCreate = viewModel::createProfile,
@@ -165,12 +169,19 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private const val DEFAULT_CURRENCY_INPUT = "DKK"
+
 data class TimeClockUiState(
     val selectedTab: AppTab = AppTab.TODAY,
     val workProfiles: List<WorkProfile> = listOf(DEFAULT_WORK_PROFILE),
     val activeProfileId: String = DEFAULT_WORK_PROFILE.id,
     val activeProfileNameInput: String = DEFAULT_WORK_PROFILE.name,
     val activeProfileStartDateInput: String = formatDateInput(DEFAULT_WORK_PROFILE.trackingStartDate),
+    val workplaceType: WorkplaceType = WorkplaceType.FIXED_HOURS_FIXED_PAY,
+    val monthlySalaryInput: String = "",
+    val hourlyRateInput: String = "",
+    val currencyInput: String = DEFAULT_CURRENCY_INPUT,
+    val paySettingsError: String? = null,
     val newProfileNameInput: String = "",
     val newProfileStartDateInput: String = formatDateInput(LocalDate.now()),
     val profileError: String? = null,
@@ -264,11 +275,19 @@ enum class AbsenceType(
 
 data class WorkReport(
     val label: String,
+    val startDate: LocalDate,
+    val endDate: LocalDate,
     val actualDuration: Duration,
     val expectedDuration: Duration,
 ) {
     val balanceDuration: Duration = actualDuration.minus(expectedDuration)
 }
+
+data class EarningsRow(
+    val label: String,
+    val amount: Double,
+    val basis: String,
+)
 
 data class OvertimeBalance(
     val range: OvertimeRange,
@@ -289,6 +308,24 @@ enum class OvertimeRange(val label: String) {
     SIX_MONTHS("6 months"),
     TWELVE_MONTHS("12 months"),
     ALL_TIME("All time"),
+}
+
+enum class WorkplaceType(
+    val label: String,
+    val description: String,
+) {
+    FIXED_HOURS_FIXED_PAY(
+        "Fixed hours + fixed pay",
+        "Regular job with expected hours, overtime balance, and optional salary",
+    ),
+    HOURLY_PAID(
+        "Hourly paid",
+        "Consultant, shift, or hourly work where earnings follow worked hours",
+    ),
+    TIME_TRACKING_ONLY(
+        "Time tracking only",
+        "Own business, projects, or unpaid work where you only track time",
+    ),
 }
 
 data class DailyChartEntry(
@@ -376,6 +413,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         )
         _uiState.value = selectedState
         rescheduleClockInReminder(selectedState)
+        refreshHomeScreenWidgets()
     }
 
     fun updateActiveProfileName(input: String) {
@@ -391,6 +429,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             activeProfileNameInput = sanitizedInput,
             profileError = null,
         )
+        refreshHomeScreenWidgets()
     }
 
     fun updateActiveProfileStartDate(input: String) {
@@ -417,6 +456,74 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 profileError = error,
             ),
         )
+        refreshHomeScreenWidgets()
+    }
+
+    fun updateWorkplaceType(type: WorkplaceType) {
+        preferences.edit()
+            .putString(profileKey(KEY_WORKPLACE_TYPE), type.name)
+            .apply()
+
+        _uiState.value = _uiState.value.copy(
+            workplaceType = type,
+            paySettingsError = null,
+        )
+        refreshHomeScreenWidgets()
+    }
+
+    fun updateMonthlySalary(input: String) {
+        val sanitizedInput = sanitizeMoneyInput(input)
+        val error = if (sanitizedInput.isNotBlank() && sanitizedInput.toMoneyOrNull() == null) {
+            "Use an amount like 45000 or 45000.50."
+        } else {
+            null
+        }
+
+        preferences.edit()
+            .putString(profileKey(KEY_MONTHLY_SALARY), sanitizedInput)
+            .apply()
+
+        _uiState.value = _uiState.value.copy(
+            monthlySalaryInput = sanitizedInput,
+            paySettingsError = error,
+        )
+        refreshHomeScreenWidgets()
+    }
+
+    fun updateHourlyRate(input: String) {
+        val sanitizedInput = sanitizeMoneyInput(input)
+        val error = if (sanitizedInput.isNotBlank() && sanitizedInput.toMoneyOrNull() == null) {
+            "Use an amount like 650 or 650.50."
+        } else {
+            null
+        }
+
+        preferences.edit()
+            .putString(profileKey(KEY_HOURLY_RATE), sanitizedInput)
+            .apply()
+
+        _uiState.value = _uiState.value.copy(
+            hourlyRateInput = sanitizedInput,
+            paySettingsError = error,
+        )
+        refreshHomeScreenWidgets()
+    }
+
+    fun updateCurrency(input: String) {
+        val sanitizedInput = input
+            .filter { it.isLetter() }
+            .uppercase()
+            .take(3)
+
+        preferences.edit()
+            .putString(profileKey(KEY_CURRENCY), sanitizedInput)
+            .apply()
+
+        _uiState.value = _uiState.value.copy(
+            currencyInput = sanitizedInput,
+            paySettingsError = null,
+        )
+        refreshHomeScreenWidgets()
     }
 
     fun updateNewProfileName(input: String) {
@@ -514,6 +621,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         )
         _uiState.value = clockedInState
         rescheduleLongSessionReminders(clockedInState)
+        refreshHomeScreenWidgets()
     }
 
     fun clockOut() {
@@ -533,6 +641,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             profileId = _uiState.value.activeProfileId,
             clockInMillis = startedAt.toEpochMilli(),
         )
+        refreshHomeScreenWidgets()
 
         _uiState.value = withDailySummary(
             _uiState.value.copy(
@@ -685,6 +794,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             ),
         )
         rescheduleLongSessionReminders(_uiState.value)
+        refreshHomeScreenWidgets()
     }
 
     fun deleteAbsence(absence: AbsenceEntry) {
@@ -697,6 +807,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             _uiState.value.copy(absences = absences),
         )
         rescheduleLongSessionReminders(_uiState.value)
+        refreshHomeScreenWidgets()
     }
 
     fun saveManualSession() {
@@ -829,6 +940,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         )
         rescheduleClockInReminder(_uiState.value)
         rescheduleLongSessionReminders(_uiState.value)
+        refreshHomeScreenWidgets()
     }
 
     fun toggleHistoryDay(date: LocalDate) {
@@ -851,6 +963,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             _uiState.value.copy(deductUnpaidLunchBreak = enabled),
         )
         rescheduleLongSessionReminders(_uiState.value)
+        refreshHomeScreenWidgets()
     }
 
     fun updateLunchBreakMinutes(input: String) {
@@ -868,6 +981,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             ),
         )
         rescheduleLongSessionReminders(_uiState.value)
+        refreshHomeScreenWidgets()
     }
 
     fun updateOvertimeStartDate(input: String) {
@@ -886,6 +1000,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             overtimeStartDateInput = sanitizedInput,
             overtimeSettingsError = error,
         )
+        refreshHomeScreenWidgets()
     }
 
     fun updateStartingOvertimeBalance(input: String) {
@@ -904,6 +1019,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             startingOvertimeBalanceInput = sanitizedInput,
             overtimeSettingsError = error,
         )
+        refreshHomeScreenWidgets()
     }
 
     fun updateOvertimeRange(range: OvertimeRange) {
@@ -912,6 +1028,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             .apply()
 
         _uiState.value = _uiState.value.copy(selectedOvertimeRange = range)
+        refreshHomeScreenWidgets()
     }
 
     fun toggleClockInReminder(enabled: Boolean) {
@@ -1079,6 +1196,28 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             profileKey(activeProfile.id, KEY_CLOCK_OUT_REMINDER_SENT_MASK),
             0,
         )
+        val workplaceType = getProfileString(
+            profileId = activeProfile.id,
+            key = KEY_WORKPLACE_TYPE,
+            defaultValue = WorkplaceType.FIXED_HOURS_FIXED_PAY.name,
+        )
+            ?.let { value -> runCatching { WorkplaceType.valueOf(value) }.getOrNull() }
+            ?: WorkplaceType.FIXED_HOURS_FIXED_PAY
+        val monthlySalaryInput = getProfileString(
+            profileId = activeProfile.id,
+            key = KEY_MONTHLY_SALARY,
+            defaultValue = "",
+        ).orEmpty()
+        val hourlyRateInput = getProfileString(
+            profileId = activeProfile.id,
+            key = KEY_HOURLY_RATE,
+            defaultValue = "",
+        ).orEmpty()
+        val currencyInput = getProfileString(
+            profileId = activeProfile.id,
+            key = KEY_CURRENCY,
+            defaultValue = DEFAULT_CURRENCY_INPUT,
+        ) ?: DEFAULT_CURRENCY_INPUT
 
         return withDailySummary(
             TimeClockUiState(
@@ -1086,6 +1225,10 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 activeProfileId = activeProfile.id,
                 activeProfileNameInput = activeProfile.name,
                 activeProfileStartDateInput = formatDateInput(activeProfile.trackingStartDate),
+                workplaceType = workplaceType,
+                monthlySalaryInput = monthlySalaryInput,
+                hourlyRateInput = hourlyRateInput,
+                currencyInput = currencyInput,
                 newProfileNameInput = newProfileNameInput,
                 newProfileStartDateInput = newProfileStartDateInput,
                 isClockedIn = activeClockIn != null,
@@ -1342,6 +1485,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             .remove(KEY_LAST_CLOCK_IN)
             .remove(KEY_LAST_CLOCK_OUT)
             .apply()
+        refreshHomeScreenWidgets()
     }
 
     private fun loadAbsences(profileId: String = _uiState.value.activeProfileId): List<AbsenceEntry> {
@@ -1354,6 +1498,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         preferences.edit()
             .putString(profileKey(KEY_ABSENCES), encodeAbsences(absences))
             .apply()
+        refreshHomeScreenWidgets()
     }
 
     private fun encodeAbsences(absences: List<AbsenceEntry>): String {
@@ -1561,6 +1706,11 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         preferences.edit()
             .putString(KEY_WORK_PROFILES, encodeProfiles(profiles))
             .apply()
+        refreshHomeScreenWidgets()
+    }
+
+    private fun refreshHomeScreenWidgets() {
+        updateTimeClockWidgets(getApplication<Application>())
     }
 
     private fun encodeProfiles(profiles: List<WorkProfile>): String {
@@ -1630,6 +1780,13 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             .take(40)
     }
 
+    private fun sanitizeMoneyInput(input: String): String {
+        return input
+            .replace(",", ".")
+            .filter { it.isDigit() || it == '.' }
+            .take(12)
+    }
+
     private fun WorkSession.overlapsDate(date: LocalDate, zoneId: ZoneId): Boolean {
         return durationOnDate(date, zoneId) > Duration.ZERO
     }
@@ -1663,6 +1820,10 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             .remove(profileKey(profileId, KEY_OVERTIME_START_DATE))
             .remove(profileKey(profileId, KEY_STARTING_OVERTIME_BALANCE))
             .remove(profileKey(profileId, KEY_OVERTIME_RANGE))
+            .remove(profileKey(profileId, KEY_WORKPLACE_TYPE))
+            .remove(profileKey(profileId, KEY_MONTHLY_SALARY))
+            .remove(profileKey(profileId, KEY_HOURLY_RATE))
+            .remove(profileKey(profileId, KEY_CURRENCY))
             .remove(profileKey(profileId, KEY_CLOCK_IN_REMINDER_ENABLED))
             .remove(profileKey(profileId, KEY_CLOCK_IN_REMINDER_TIME))
             .remove(profileKey(profileId, KEY_CLOCK_OUT_REMINDER_ENABLED))
@@ -1684,6 +1845,10 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         const val KEY_OVERTIME_START_DATE = "overtime_start_date"
         const val KEY_STARTING_OVERTIME_BALANCE = "starting_overtime_balance"
         const val KEY_OVERTIME_RANGE = "overtime_range"
+        const val KEY_WORKPLACE_TYPE = "workplace_type"
+        const val KEY_MONTHLY_SALARY = "monthly_salary"
+        const val KEY_HOURLY_RATE = "hourly_rate"
+        const val KEY_CURRENCY = "currency"
         const val KEY_CLOCK_IN_REMINDER_ENABLED = "clock_in_reminder_enabled"
         const val KEY_CLOCK_IN_REMINDER_TIME = "clock_in_reminder_time"
         const val KEY_CLOCK_OUT_REMINDER_ENABLED = "clock_out_reminder_enabled"
@@ -1702,6 +1867,10 @@ fun TimeClockScreen(
     onProfileSelect: (String) -> Unit,
     onProfileNameChange: (String) -> Unit,
     onProfileStartDateChange: (String) -> Unit,
+    onWorkplaceTypeSelect: (WorkplaceType) -> Unit,
+    onMonthlySalaryChange: (String) -> Unit,
+    onHourlyRateChange: (String) -> Unit,
+    onCurrencyChange: (String) -> Unit,
     onNewProfileNameChange: (String) -> Unit,
     onNewProfileStartDateChange: (String) -> Unit,
     onProfileCreate: () -> Unit,
@@ -1808,6 +1977,10 @@ fun TimeClockScreen(
                     state = state,
                     onProfileNameChange = onProfileNameChange,
                     onProfileStartDateChange = onProfileStartDateChange,
+                    onWorkplaceTypeSelect = onWorkplaceTypeSelect,
+                    onMonthlySalaryChange = onMonthlySalaryChange,
+                    onHourlyRateChange = onHourlyRateChange,
+                    onCurrencyChange = onCurrencyChange,
                     onNewProfileNameChange = onNewProfileNameChange,
                     onNewProfileStartDateChange = onNewProfileStartDateChange,
                     onProfileCreate = onProfileCreate,
@@ -1933,6 +2106,7 @@ private fun InsightsTab(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         ReportsCard(state = state)
+        EarningsCard(state = state)
         ChartsCard(state = state)
         OvertimeBalanceCard(
             state = state,
@@ -1946,6 +2120,10 @@ private fun SettingsTab(
     state: TimeClockUiState,
     onProfileNameChange: (String) -> Unit,
     onProfileStartDateChange: (String) -> Unit,
+    onWorkplaceTypeSelect: (WorkplaceType) -> Unit,
+    onMonthlySalaryChange: (String) -> Unit,
+    onHourlyRateChange: (String) -> Unit,
+    onCurrencyChange: (String) -> Unit,
     onNewProfileNameChange: (String) -> Unit,
     onNewProfileStartDateChange: (String) -> Unit,
     onProfileCreate: () -> Unit,
@@ -1969,6 +2147,10 @@ private fun SettingsTab(
             state = state,
             onProfileNameChange = onProfileNameChange,
             onProfileStartDateChange = onProfileStartDateChange,
+            onWorkplaceTypeSelect = onWorkplaceTypeSelect,
+            onMonthlySalaryChange = onMonthlySalaryChange,
+            onHourlyRateChange = onHourlyRateChange,
+            onCurrencyChange = onCurrencyChange,
             onNewProfileNameChange = onNewProfileNameChange,
             onNewProfileStartDateChange = onNewProfileStartDateChange,
             onProfileCreate = onProfileCreate,
@@ -2119,6 +2301,10 @@ private fun WorkProfileCard(
     state: TimeClockUiState,
     onProfileNameChange: (String) -> Unit,
     onProfileStartDateChange: (String) -> Unit,
+    onWorkplaceTypeSelect: (WorkplaceType) -> Unit,
+    onMonthlySalaryChange: (String) -> Unit,
+    onHourlyRateChange: (String) -> Unit,
+    onCurrencyChange: (String) -> Unit,
     onNewProfileNameChange: (String) -> Unit,
     onNewProfileStartDateChange: (String) -> Unit,
     onProfileCreate: () -> Unit,
@@ -2153,6 +2339,47 @@ private fun WorkProfileCard(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
             )
+            WorkplaceTypeSelector(
+                selectedType = state.workplaceType,
+                onTypeSelect = onWorkplaceTypeSelect,
+            )
+            if (state.workplaceType == WorkplaceType.FIXED_HOURS_FIXED_PAY) {
+                OutlinedTextField(
+                    value = state.monthlySalaryInput,
+                    onValueChange = onMonthlySalaryChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Monthly salary") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                )
+            }
+            if (state.workplaceType == WorkplaceType.HOURLY_PAID) {
+                OutlinedTextField(
+                    value = state.hourlyRateInput,
+                    onValueChange = onHourlyRateChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Hourly rate") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                )
+            }
+            if (state.workplaceType != WorkplaceType.TIME_TRACKING_ONLY) {
+                OutlinedTextField(
+                    value = state.currencyInput,
+                    onValueChange = onCurrencyChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Currency") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                )
+            }
+            state.paySettingsError?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFB42318),
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
@@ -2202,6 +2429,35 @@ private fun WorkProfileCard(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun WorkplaceTypeSelector(
+    selectedType: WorkplaceType,
+    onTypeSelect: (WorkplaceType) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        WorkplaceType.entries.forEach { type ->
+            FilterChip(
+                selected = type == selectedType,
+                onClick = { onTypeSelect(type) },
+                label = {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = type.label,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = type.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }
@@ -2772,6 +3028,81 @@ private fun ReportsCard(state: TimeClockUiState) {
 }
 
 @Composable
+private fun EarningsCard(state: TimeClockUiState) {
+    val earningsRows = buildEarningsRows(state)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "Earnings",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = state.workplaceType.label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (earningsRows.isEmpty()) {
+                Text(
+                    text = when (state.workplaceType) {
+                        WorkplaceType.TIME_TRACKING_ONLY -> "This workplace tracks time only."
+                        WorkplaceType.FIXED_HOURS_FIXED_PAY -> "Add monthly salary in Settings to estimate earnings."
+                        WorkplaceType.HOURLY_PAID -> "Add hourly rate in Settings to estimate earnings."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                earningsRows.forEach { row ->
+                    EarningsSummaryRow(
+                        row = row,
+                        currency = state.currencyInput.ifBlank { DEFAULT_CURRENCY_INPUT },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EarningsSummaryRow(
+    row: EarningsRow,
+    currency: String,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = row.label,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = formatMoney(row.amount, currency),
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color(0xFF0F766E),
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        Text(
+            text = row.basis,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
 private fun ReportRow(report: WorkReport) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
@@ -2810,6 +3141,11 @@ private fun ReportRow(report: WorkReport) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        Text(
+            text = "${formatDateInput(report.startDate)} to ${formatDateInput(report.endDate)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -3444,6 +3780,15 @@ private fun formatDurationInput(duration: Duration): String {
     return "%d:%02d".format(hours, minutes)
 }
 
+private fun formatMoney(amount: Double, currency: String): String {
+    val safeCurrency = currency.ifBlank { DEFAULT_CURRENCY_INPUT }
+    return "$safeCurrency ${"%,.2f".format(amount.coerceAtLeast(0.0))}"
+}
+
+private fun Duration.toHoursDecimal(): Double {
+    return toMinutes().coerceAtLeast(0).toDouble() / 60.0
+}
+
 private fun formatProgressMessage(
     isTodayWorkday: Boolean,
     absence: AbsenceEntry?,
@@ -3491,21 +3836,21 @@ private fun buildHistoryDays(state: TimeClockUiState): List<WorkDayHistory> {
 private fun buildReports(state: TimeClockUiState): List<WorkReport> {
     val today = LocalDate.now()
     val weekStart = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-    val weekEnd = weekStart.plusDays(6)
+    val weekEnd = minOf(weekStart.plusDays(6), today)
     val monthStart = today.withDayOfMonth(1)
-    val monthEnd = today.withDayOfMonth(today.lengthOfMonth())
+    val monthEnd = today
     val halfYearStart = if (today.monthValue <= 6) {
         LocalDate.of(today.year, 1, 1)
     } else {
         LocalDate.of(today.year, 7, 1)
     }
     val halfYearEnd = if (today.monthValue <= 6) {
-        LocalDate.of(today.year, 6, 30)
+        minOf(LocalDate.of(today.year, 6, 30), today)
     } else {
-        LocalDate.of(today.year, 12, 31)
+        minOf(LocalDate.of(today.year, 12, 31), today)
     }
     val yearStart = LocalDate.of(today.year, 1, 1)
-    val yearEnd = LocalDate.of(today.year, 12, 31)
+    val yearEnd = today
 
     return listOf(
         buildReport("Today", today, today, state),
@@ -3514,6 +3859,45 @@ private fun buildReports(state: TimeClockUiState): List<WorkReport> {
         buildReport("Half year", halfYearStart, halfYearEnd, state),
         buildReport("This year", yearStart, yearEnd, state),
     )
+}
+
+private fun buildEarningsRows(state: TimeClockUiState): List<EarningsRow> {
+    if (state.workplaceType == WorkplaceType.TIME_TRACKING_ONLY) return emptyList()
+
+    val reports = buildReports(state)
+    return when (state.workplaceType) {
+        WorkplaceType.HOURLY_PAID -> {
+            val hourlyRate = state.hourlyRateInput.toMoneyOrNull() ?: return emptyList()
+            reports.map { report ->
+                val hours = report.actualDuration.toHoursDecimal()
+                EarningsRow(
+                    label = report.label,
+                    amount = hours * hourlyRate,
+                    basis = "${formatHoursAndMinutes(report.actualDuration)} worked at ${formatMoney(hourlyRate, state.currencyInput.ifBlank { DEFAULT_CURRENCY_INPUT })}/h",
+                )
+            }
+        }
+        WorkplaceType.FIXED_HOURS_FIXED_PAY -> {
+            val monthlySalary = state.monthlySalaryInput.toMoneyOrNull() ?: return emptyList()
+            val expectedWeeklyHours = state.expectedWeeklyDuration.toHoursDecimal()
+            if (expectedWeeklyHours <= 0.0) return emptyList()
+            val hourlyEquivalent = (monthlySalary * 12.0) / (expectedWeeklyHours * 52.0)
+
+            reports.map { report ->
+                val paidDuration = if (report.expectedDuration > Duration.ZERO) {
+                    report.expectedDuration
+                } else {
+                    report.actualDuration
+                }
+                EarningsRow(
+                    label = report.label,
+                    amount = paidDuration.toHoursDecimal() * hourlyEquivalent,
+                    basis = "${formatHoursAndMinutes(paidDuration)} salary value from ${formatMoney(monthlySalary, state.currencyInput.ifBlank { DEFAULT_CURRENCY_INPUT })}/month",
+                )
+            }
+        }
+        WorkplaceType.TIME_TRACKING_ONLY -> emptyList()
+    }
 }
 
 private fun buildOvertimeBalance(state: TimeClockUiState): OvertimeBalance {
@@ -3563,10 +3947,11 @@ private fun buildDailyChartEntries(state: TimeClockUiState): List<DailyChartEntr
     val today = LocalDate.now()
     return (6L downTo 0L).map { daysAgo ->
         val date = today.minusDays(daysAgo)
+        val isBeforeTrackingStart = date.isBefore(state.activeProfile.trackingStartDate)
         DailyChartEntry(
             date = date,
-            actualDuration = actualDurationForRange(date, date, state),
-            expectedDuration = expectedDurationForRange(date, date, state),
+            actualDuration = if (isBeforeTrackingStart) Duration.ZERO else actualDurationForRange(date, date, state),
+            expectedDuration = if (isBeforeTrackingStart) Duration.ZERO else expectedDurationForRange(date, date, state),
         )
     }
 }
@@ -3574,22 +3959,31 @@ private fun buildDailyChartEntries(state: TimeClockUiState): List<DailyChartEntr
 private fun buildCurrentWeekReport(state: TimeClockUiState): WorkReport {
     val today = LocalDate.now()
     val weekStart = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-    val weekEnd = weekStart.plusDays(6)
+    val weekEnd = minOf(weekStart.plusDays(6), today)
     return buildReport("This week", weekStart, weekEnd, state)
 }
 
 private fun buildMonthlyTrendEntries(state: TimeClockUiState): List<MonthlyTrendEntry> {
     val today = LocalDate.now()
     val monthStart = today.withDayOfMonth(1)
-    val monthEnd = today.withDayOfMonth(today.lengthOfMonth())
+    val monthEnd = today
     val entries = mutableListOf<MonthlyTrendEntry>()
     var weekStart = monthStart
     var weekNumber = 1
 
     while (!weekStart.isAfter(monthEnd)) {
         val weekEnd = minOf(weekStart.plusDays(6), monthEnd)
-        val actualDuration = actualDurationForRange(weekStart, weekEnd, state)
-        val expectedDuration = expectedDurationForRange(weekStart, weekEnd, state)
+        val effectiveWeekStart = weekStart.coerceAtLeast(state.activeProfile.trackingStartDate)
+        val actualDuration = if (effectiveWeekStart.isAfter(weekEnd)) {
+            Duration.ZERO
+        } else {
+            actualDurationForRange(effectiveWeekStart, weekEnd, state)
+        }
+        val expectedDuration = if (effectiveWeekStart.isAfter(weekEnd)) {
+            Duration.ZERO
+        } else {
+            expectedDurationForRange(effectiveWeekStart, weekEnd, state)
+        }
         entries.add(
             MonthlyTrendEntry(
                 label = "W$weekNumber",
@@ -3611,11 +4005,12 @@ private fun buildCalendarVisualDays(state: TimeClockUiState): List<CalendarDayVi
     var date = monthStart
 
     while (!date.isAfter(monthEnd)) {
+        val isOutsideTrackedRange = date.isBefore(state.activeProfile.trackingStartDate) || date.isAfter(today)
         days.add(
             CalendarDayVisual(
                 date = date,
-                actualDuration = actualDurationForRange(date, date, state),
-                expectedDuration = expectedDurationForRange(date, date, state),
+                actualDuration = if (isOutsideTrackedRange) Duration.ZERO else actualDurationForRange(date, date, state),
+                expectedDuration = if (isOutsideTrackedRange) Duration.ZERO else expectedDurationForRange(date, date, state),
             ),
         )
         date = date.plusDays(1)
@@ -3630,11 +4025,25 @@ private fun buildReport(
     endDate: LocalDate,
     state: TimeClockUiState,
 ): WorkReport {
-    val actualDuration = actualDurationForRange(startDate, endDate, state)
-    val expectedDuration = expectedDurationForRange(startDate, endDate, state)
+    val today = LocalDate.now()
+    val effectiveStartDate = startDate.coerceAtLeast(state.activeProfile.trackingStartDate)
+    val effectiveEndDate = minOf(endDate, today)
+    val hasStartedInPeriod = !effectiveStartDate.isAfter(effectiveEndDate)
+    val actualDuration = if (hasStartedInPeriod) {
+        actualDurationForRange(effectiveStartDate, effectiveEndDate, state)
+    } else {
+        Duration.ZERO
+    }
+    val expectedDuration = if (hasStartedInPeriod) {
+        expectedDurationForRange(effectiveStartDate, effectiveEndDate, state)
+    } else {
+        Duration.ZERO
+    }
 
     return WorkReport(
         label = label,
+        startDate = if (hasStartedInPeriod) effectiveStartDate else effectiveEndDate,
+        endDate = effectiveEndDate,
         actualDuration = actualDuration,
         expectedDuration = expectedDuration,
     )
@@ -3772,6 +4181,13 @@ private fun String.toSignedDurationOrNull(): Duration? {
     val unsigned = trimmed.removePrefix("-").removePrefix("+")
     val duration = parseDurationInput(unsigned) ?: return null
     return if (isNegative) duration.negated() else duration
+}
+
+private fun String.toMoneyOrNull(): Double? {
+    val normalized = trim().replace(",", ".")
+    if (normalized.isBlank()) return null
+    val amount = normalized.toDoubleOrNull() ?: return null
+    return amount.takeIf { it >= 0.0 }
 }
 
 private fun parseDurationInput(input: String): Duration? {
@@ -3952,6 +4368,10 @@ private fun ClockedOutPreview() {
             onProfileSelect = {},
             onProfileNameChange = {},
             onProfileStartDateChange = {},
+            onWorkplaceTypeSelect = {},
+            onMonthlySalaryChange = {},
+            onHourlyRateChange = {},
+            onCurrencyChange = {},
             onNewProfileNameChange = {},
             onNewProfileStartDateChange = {},
             onProfileCreate = {},
@@ -4018,6 +4438,10 @@ private fun ClockedInPreview() {
             onProfileSelect = {},
             onProfileNameChange = {},
             onProfileStartDateChange = {},
+            onWorkplaceTypeSelect = {},
+            onMonthlySalaryChange = {},
+            onHourlyRateChange = {},
+            onCurrencyChange = {},
             onNewProfileNameChange = {},
             onNewProfileStartDateChange = {},
             onProfileCreate = {},

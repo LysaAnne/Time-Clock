@@ -67,10 +67,16 @@ Features 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, and 13 are implemented. Feature 6 w
 - Add time-off hours that use overtime balance
 - Keep absence entries separate per work profile
 - Prevent absence days from counting as missing hours in reports, charts, history, and overtime balance
+- Choose workplace type per profile: fixed hours/fixed pay, hourly paid, or time tracking only
+- Add monthly salary or hourly rate to estimate earned money
+- Show profile-specific earnings estimates in Insights
+- Add a Today home-screen widget with workplace selection, clock in/out, active timer, and today's total
+- Add a Balance home-screen widget with workplace selection and overtime balance
 
 Expected time inputs accept formats like `7:30`, `7h30m`, `7 30`, `450m`, or decimal hours like `7.5`.
 Starting overtime balance accepts formats like `2:30` or `-1:15` and is applied to the all-time overtime balance.
 Manual sessions use date format `YYYY-MM-DD` and time format `HH:mm`.
+Pay inputs accept plain amounts like `45000`, `650`, or `650.50`.
 
 ## How To Open
 

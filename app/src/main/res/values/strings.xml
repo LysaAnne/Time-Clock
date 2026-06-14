@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">Time Clock</string>
+    <string name="widget_today_name">Time Clock Today</string>
+    <string name="widget_today_description">Clock in or out and see today\'s progress.</string>
+    <string name="widget_balance_name">Time Clock Balance</string>
+    <string name="widget_balance_description">See your overtime balance for the active workplace.</string>
 </resources>
