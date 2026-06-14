@@ -432,6 +432,8 @@ Implemented:
 
 Help the user remember to clock in or out.
 
+Status: **Built in version 1.2.0**
+
 Consider:
 
 - Reminder to clock in near work start time
@@ -440,7 +442,130 @@ Consider:
 - Location-based reminder when arriving at or leaving work
 - Notification showing active session duration
 
-### 13. Home Screen Widgets
+Implemented:
+
+- Android notification permission added
+- Reminder notification channel created
+- Profile-specific clock-in reminder setting
+- Scheduled reminder to clock in near the selected work start time
+- Profile-specific clock-out reminder setting
+- Long-session alert calculated from the active profile's expected daily work time
+- Clock-out alert scheduled for expected clock-out time after clocking in
+- Follow-up overtime alerts at 1, 2, and 5 hours over expected daily work time
+- Notification opens the app when tapped
+- Clock-in reminders and long-session reminders use Android alarms
+
+Not implemented yet:
+
+- Location-based reminders
+- Persistent notification while clocked in
+
+### 13. Vacation, Sick Days, and Absence
+
+Handle days where the user should not clock work time, but the day should still be counted correctly.
+
+Status: **Built in version 1.3.0**
+
+Goal:
+
+- Mark days as vacation/holiday, sick leave, absence, or no-work days
+- Prevent expected hours from becoming missing time on approved absence days
+- Keep reports, charts, history, and overtime balance fair when the user is away from work
+
+Consider:
+
+- Add vacation days
+- Add sick days
+- Treat vacation and holiday as the same absence type
+- Add vacation/holiday date ranges with start and end dates
+- Let sickness be either one day or a date range
+- Add unpaid absence days
+- Add time off using overtime balance
+- Mark days as not expected work days
+- Choose whether an absence counts as paid expected hours or removes expected hours
+- Add half-day absence
+- Add notes to absence entries
+- Show absence labels in History and calendar visuals
+- Adjust expected hours automatically in reports and overtime balance
+- Keep absence entries profile-specific
+
+Recommended first version:
+
+- Add absence entries for the active work profile
+- Support vacation/holiday, sick day, no-work day, and time off
+- Support full-day entries first
+- Remove expected hours for no-work/unpaid absence days
+- Count vacation/holiday and sick days as covered days so they do not create missing hours
+- Show absence entries in History
+- Include absence adjustments in reports, charts, and overtime balance
+
+Implemented:
+
+- Profile-specific absence entries
+- Full-day vacation/holiday, sick day, and no-work entries
+- Vacation/holiday ranges with start and end dates
+- Sick-day entries can be one day or a date range
+- Time-off entries with hours/minutes, such as `2:00`
+- Optional note on absence entries
+- Absence entry form in History
+- Absence entries shown in History, including days with no work sessions
+- Delete absence entries from History
+- Expected hours skipped on absence days
+- Time-off entries do not remove expected hours, so they reduce overtime balance naturally when fewer hours are worked
+- Reports, charts, history, today summary, long-session reminders, and overtime balance respect absence days
+
+Not implemented yet:
+
+- Half-day absence
+- Different paid/unpaid absence rules
+- Recurring public holidays
+
+### 14. Workplace Type, Pay, and Earnings
+
+Let each work profile describe how that workplace should calculate time, balance, and money.
+
+Status: **Planned**
+
+Goal:
+
+- Support different kinds of work without forcing every workplace into the same overtime model
+- Track earned money when the user wants pay or salary calculations
+- Keep profiles flexible for regular employment, consulting, and self-employment
+
+Consider:
+
+- Workplace type setting per profile
+- `Fixed hours + fixed pay` for regular salaried jobs with expected hours and overtime balance
+- `Hourly paid` for consultant, shift, or hourly jobs where earnings are based on worked hours
+- `Time tracking only` for own business, study, projects, or unpaid work where the user only wants totals
+- Salary amount for fixed-pay profiles
+- Hourly rate for hourly profiles
+- Pay period, such as monthly, weekly, or every 14 days
+- Currency setting
+- Optional overtime rate, evening/weekend rate, or holiday rate
+- Optional unpaid break behavior per workplace type
+- Earnings summaries for today, week, month, year, and all time
+- Separate earnings from overtime balance so the UI stays understandable
+- Export reports with both hours and earned money
+
+Recommended first version:
+
+- Add a workplace type dropdown in Settings
+- Keep existing profiles as `Fixed hours + fixed pay` by default
+- Add optional salary input for fixed-pay profiles
+- Add hourly rate input for hourly-paid profiles
+- Hide overtime-balance pressure for `Time tracking only` profiles
+- Show an estimated earned amount in Insights when pay information is available
+
+Nice later ideas:
+
+- Multiple pay rates for the same workplace
+- Weekend, evening, or holiday multipliers
+- Tax estimate fields
+- Invoice-ready consultant report
+- Project/client tags for self-employed tracking
+
+### 15. Home Screen Widgets
 
 Let the user see and control work time without opening the full app.
 
@@ -481,7 +606,7 @@ Nice later widget ideas:
 - Multi-workplace widget showing balances for several profiles
 - Lock-screen or glance-style status if supported by the Android version
 
-### 14. Location Features
+### 16. Location Features
 
 Optional, but useful for work tracking.
 
@@ -493,7 +618,7 @@ Consider:
 - Automatic prompts based on location
 - Privacy-friendly setting to disable location entirely
 
-### 15. Export
+### 17. Export
 
 Allow the user to take their data elsewhere.
 
@@ -505,7 +630,7 @@ Consider:
 - Share report by email
 - Include notes and edited entries
 
-### 16. Backup and Sync
+### 18. Backup and Sync
 
 Protect the data if the phone is lost.
 
@@ -518,7 +643,7 @@ Consider:
 - Multi-device support
 - Restore from backup
 
-### 17. Calendar Integration
+### 19. Calendar Integration
 
 Optional integration with the user's schedule.
 
@@ -529,19 +654,7 @@ Consider:
 - Add work sessions to calendar
 - Show holidays and days off
 
-### 18. Vacation, Sick Days, and Absence
-
-Useful if the app becomes a complete work-time tracker.
-
-Consider:
-
-- Add vacation days
-- Add sick days
-- Add public holidays
-- Mark days as not expected work days
-- Adjust expected hours automatically
-
-### 19. Data Privacy
+### 20. Data Privacy
 
 Important because work-time data is personal.
 
@@ -553,7 +666,7 @@ Consider:
 - Optional app lock
 - Avoid unnecessary tracking
 
-### 20. Polish and Convenience
+### 21. Polish and Convenience
 
 Small features that make the app feel good to use.
 
@@ -583,9 +696,11 @@ Build the app in this order:
 11. Add work profiles
 12. Simplify the UI with tabs
 13. Add reminders
-14. Add home screen widgets
-15. Add export
-16. Add backup
+14. Add vacation, sick days, and absence
+15. Add workplace type, pay, and earnings
+16. Add home screen widgets
+17. Add export
+18. Add backup
 
 ## First Feature To Build
 

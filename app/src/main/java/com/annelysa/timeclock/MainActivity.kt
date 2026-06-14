@@ -1,7 +1,15 @@
 package com.annelysa.timeclock
 
+import android.Manifest
 import android.app.Application
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -83,6 +91,8 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        createReminderNotificationChannel()
+        requestNotificationPermissionIfNeeded()
 
         setContent {
             TimeClockTheme {
@@ -107,6 +117,13 @@ class MainActivity : ComponentActivity() {
                     onManualClockOutChange = viewModel::updateManualClockOut,
                     onManualSessionSave = viewModel::saveManualSession,
                     onManualSessionCancel = viewModel::cancelManualEdit,
+                    onAbsenceDateChange = viewModel::updateAbsenceDate,
+                    onAbsenceEndDateChange = viewModel::updateAbsenceEndDate,
+                    onAbsenceTypeSelect = viewModel::selectAbsenceType,
+                    onAbsenceHoursChange = viewModel::updateAbsenceHours,
+                    onAbsenceNoteChange = viewModel::updateAbsenceNote,
+                    onAbsenceSave = viewModel::saveAbsence,
+                    onAbsenceDelete = viewModel::deleteAbsence,
                     onSessionEdit = viewModel::startEditingSession,
                     onSessionDelete = viewModel::deleteSession,
                     onExpectedDailyHoursChange = viewModel::updateExpectedDailyHours,
@@ -117,8 +134,33 @@ class MainActivity : ComponentActivity() {
                     onOvertimeStartDateChange = viewModel::updateOvertimeStartDate,
                     onStartingOvertimeBalanceChange = viewModel::updateStartingOvertimeBalance,
                     onOvertimeRangeChange = viewModel::updateOvertimeRange,
+                    onClockInReminderToggle = viewModel::toggleClockInReminder,
+                    onClockInReminderTimeChange = viewModel::updateClockInReminderTime,
+                    onClockOutReminderToggle = viewModel::toggleClockOutReminder,
                 )
             }
+        }
+    }
+
+    private fun createReminderNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+
+        val channel = NotificationChannel(
+            REMINDER_NOTIFICATION_CHANNEL_ID,
+            "Time Clock reminders",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = "Clock-out reminders and active session alerts"
+        }
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.createNotificationChannel(channel)
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST_CODE)
         }
     }
 }
@@ -161,10 +203,22 @@ data class TimeClockUiState(
     val manualEntryError: String? = null,
     val editingSessionClockInMillis: Long? = null,
     val editingSessionClockOutMillis: Long? = null,
+    val absences: List<AbsenceEntry> = emptyList(),
+    val absenceDateInput: String = formatDateInput(LocalDate.now()),
+    val absenceEndDateInput: String = formatDateInput(LocalDate.now()),
+    val selectedAbsenceType: AbsenceType = AbsenceType.VACATION,
+    val absenceHoursInput: String = "1:00",
+    val absenceNoteInput: String = "",
+    val absenceEntryError: String? = null,
     val overtimeStartDateInput: String = formatDateInput(LocalDate.now()),
     val startingOvertimeBalanceInput: String = "0:00",
     val selectedOvertimeRange: OvertimeRange = OvertimeRange.ALL_TIME,
     val overtimeSettingsError: String? = null,
+    val clockInReminderEnabled: Boolean = false,
+    val clockInReminderTimeInput: String = DEFAULT_CLOCK_IN_REMINDER_INPUT,
+    val clockOutReminderEnabled: Boolean = false,
+    val clockOutReminderSentMask: Int = 0,
+    val reminderSettingsError: String? = null,
 )
 
 data class WorkProfile(
@@ -183,10 +237,29 @@ data class WorkSession(
 data class WorkDayHistory(
     val date: LocalDate,
     val sessions: List<WorkSession>,
+    val absences: List<AbsenceEntry>,
     val totalDuration: Duration,
     val expectedDuration: Duration,
 ) {
     val balanceDuration: Duration = totalDuration.minus(expectedDuration)
+}
+
+data class AbsenceEntry(
+    val date: LocalDate,
+    val type: AbsenceType,
+    val duration: Duration = Duration.ZERO,
+    val note: String = "",
+)
+
+enum class AbsenceType(
+    val label: String,
+    val coversExpectedHours: Boolean,
+    val supportsDateRange: Boolean,
+) {
+    VACATION("Vacation / holiday", true, true),
+    SICK_DAY("Sick day", true, true),
+    NO_WORK("No work", true, false),
+    TIME_OFF("Time off", false, false),
 }
 
 data class WorkReport(
@@ -252,6 +325,11 @@ enum class DayVisualStatus {
     NO_TARGET,
 }
 
+data class LongSessionAlert(
+    val index: Int,
+    val overtimeDuration: Duration,
+)
+
 enum class AppTab(
     val label: String,
     val icon: ImageVector,
@@ -290,12 +368,14 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             .putString(KEY_ACTIVE_PROFILE_ID, profileId)
             .apply()
 
-        _uiState.value = buildStateForProfile(
+        val selectedState = buildStateForProfile(
             profiles = profiles,
             activeProfile = selectedProfile,
             newProfileNameInput = _uiState.value.newProfileNameInput,
             newProfileStartDateInput = _uiState.value.newProfileStartDateInput,
         )
+        _uiState.value = selectedState
+        rescheduleClockInReminder(selectedState)
     }
 
     fun updateActiveProfileName(input: String) {
@@ -378,12 +458,14 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             .putString(KEY_ACTIVE_PROFILE_ID, newProfile.id)
             .apply()
 
-        _uiState.value = buildStateForProfile(
+        val newProfileState = buildStateForProfile(
             profiles = updatedProfiles,
             activeProfile = newProfile,
             newProfileNameInput = "",
             newProfileStartDateInput = formatDateInput(LocalDate.now()),
         )
+        _uiState.value = newProfileState
+        rescheduleClockInReminder(newProfileState)
     }
 
     fun deleteActiveProfile() {
@@ -403,12 +485,14 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             .removeProfileData(deletedProfileId)
             .apply()
 
-        _uiState.value = buildStateForProfile(
+        val nextProfileState = buildStateForProfile(
             profiles = updatedProfiles,
             activeProfile = nextProfile,
             newProfileNameInput = state.newProfileNameInput,
             newProfileStartDateInput = state.newProfileStartDateInput,
         )
+        _uiState.value = nextProfileState
+        rescheduleClockInReminder(nextProfileState)
     }
 
     fun clockIn() {
@@ -417,16 +501,19 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         val now = Instant.now()
         preferences.edit()
             .putLong(profileKey(KEY_ACTIVE_CLOCK_IN), now.toEpochMilli())
+            .remove(profileKey(KEY_CLOCK_OUT_REMINDER_SENT_MASK))
             .remove(KEY_ACTIVE_CLOCK_IN)
             .apply()
 
-        _uiState.value = withDailySummary(
+        val clockedInState = withDailySummary(
             _uiState.value.copy(
                 isClockedIn = true,
                 clockInTime = now,
                 activeDuration = Duration.ZERO,
             ),
         )
+        _uiState.value = clockedInState
+        rescheduleLongSessionReminders(clockedInState)
     }
 
     fun clockOut() {
@@ -438,8 +525,14 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         saveCompletedSessions(completedSessions)
         preferences.edit()
             .remove(profileKey(KEY_ACTIVE_CLOCK_IN))
+            .remove(profileKey(KEY_CLOCK_OUT_REMINDER_SENT_MASK))
             .remove(KEY_ACTIVE_CLOCK_IN)
             .apply()
+        cancelLongSessionReminders(
+            context = getApplication<Application>(),
+            profileId = _uiState.value.activeProfileId,
+            clockInMillis = startedAt.toEpochMilli(),
+        )
 
         _uiState.value = withDailySummary(
             _uiState.value.copy(
@@ -498,6 +591,112 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             editingSessionClockInMillis = null,
             editingSessionClockOutMillis = null,
         )
+    }
+
+    fun updateAbsenceDate(input: String) {
+        _uiState.value = _uiState.value.copy(
+            absenceDateInput = input.take(10),
+            absenceEntryError = null,
+        )
+    }
+
+    fun updateAbsenceEndDate(input: String) {
+        _uiState.value = _uiState.value.copy(
+            absenceEndDateInput = input.take(10),
+            absenceEntryError = null,
+        )
+    }
+
+    fun selectAbsenceType(type: AbsenceType) {
+        _uiState.value = _uiState.value.copy(
+            selectedAbsenceType = type,
+            absenceEntryError = null,
+        )
+    }
+
+    fun updateAbsenceHours(input: String) {
+        _uiState.value = _uiState.value.copy(
+            absenceHoursInput = sanitizeDurationInput(input),
+            absenceEntryError = null,
+        )
+    }
+
+    fun updateAbsenceNote(input: String) {
+        _uiState.value = _uiState.value.copy(
+            absenceNoteInput = input.take(80),
+            absenceEntryError = null,
+        )
+    }
+
+    fun saveAbsence() {
+        val state = _uiState.value
+        val startDate = runCatching { LocalDate.parse(state.absenceDateInput) }.getOrNull()
+        if (startDate == null) {
+            _uiState.value = state.copy(absenceEntryError = "Use date format YYYY-MM-DD.")
+            return
+        }
+        val endDate = if (state.selectedAbsenceType.supportsDateRange) {
+            runCatching { LocalDate.parse(state.absenceEndDateInput) }.getOrNull()
+        } else {
+            startDate
+        }
+        if (endDate == null) {
+            _uiState.value = state.copy(absenceEntryError = "Use end date format YYYY-MM-DD.")
+            return
+        }
+        if (endDate.isBefore(startDate)) {
+            _uiState.value = state.copy(absenceEntryError = "End date must be after start date.")
+            return
+        }
+
+        val duration = if (state.selectedAbsenceType == AbsenceType.TIME_OFF) {
+            state.absenceHoursInput.toDurationOrNull()
+        } else {
+            Duration.ZERO
+        }
+        if (state.selectedAbsenceType == AbsenceType.TIME_OFF && (duration == null || duration <= Duration.ZERO)) {
+            _uiState.value = state.copy(absenceEntryError = "Add time off like 2:00 or 1h30m.")
+            return
+        }
+
+        val dates = buildDateRange(startDate, endDate)
+        val absenceDates = dates.toSet()
+        val newAbsences = dates.map { date ->
+            AbsenceEntry(
+                date = date,
+                type = state.selectedAbsenceType,
+                duration = duration ?: Duration.ZERO,
+                note = state.absenceNoteInput.trim(),
+            )
+        }
+        val absences = (state.absences.filterNot { it.date in absenceDates } + newAbsences)
+            .sortedBy { it.date }
+
+        saveAbsences(absences)
+        _uiState.value = withDailySummary(
+            state.copy(
+                absences = absences,
+                absenceDateInput = formatDateInput(LocalDate.now()),
+                absenceEndDateInput = formatDateInput(LocalDate.now()),
+                absenceHoursInput = "1:00",
+                absenceNoteInput = "",
+                absenceEntryError = null,
+                expandedHistoryDates = state.expandedHistoryDates + dates,
+            ),
+        )
+        rescheduleLongSessionReminders(_uiState.value)
+    }
+
+    fun deleteAbsence(absence: AbsenceEntry) {
+        val absences = _uiState.value.absences.filterNot {
+            it.date == absence.date && it.type == absence.type && it.note == absence.note
+        }
+
+        saveAbsences(absences)
+        _uiState.value = withDailySummary(
+            _uiState.value.copy(absences = absences),
+        )
+        rescheduleLongSessionReminders(_uiState.value)
     }
 
     fun saveManualSession() {
@@ -577,6 +776,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 expectedWeeklyDuration = weeklyDuration ?: _uiState.value.expectedWeeklyDuration,
             ),
         )
+        rescheduleLongSessionReminders(_uiState.value)
     }
 
     fun updateExpectedWeeklyHours(input: String) {
@@ -598,6 +798,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 expectedDailyDuration = dailyDuration ?: _uiState.value.expectedDailyDuration,
             ),
         )
+        rescheduleLongSessionReminders(_uiState.value)
     }
 
     fun toggleWorkday(day: DayOfWeek) {
@@ -626,6 +827,8 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                     .let(::formatDurationInput),
             ),
         )
+        rescheduleClockInReminder(_uiState.value)
+        rescheduleLongSessionReminders(_uiState.value)
     }
 
     fun toggleHistoryDay(date: LocalDate) {
@@ -647,6 +850,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.value = withDailySummary(
             _uiState.value.copy(deductUnpaidLunchBreak = enabled),
         )
+        rescheduleLongSessionReminders(_uiState.value)
     }
 
     fun updateLunchBreakMinutes(input: String) {
@@ -663,6 +867,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 lunchBreakDuration = Duration.ofMinutes(minutes),
             ),
         )
+        rescheduleLongSessionReminders(_uiState.value)
     }
 
     fun updateOvertimeStartDate(input: String) {
@@ -709,15 +914,72 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.value = _uiState.value.copy(selectedOvertimeRange = range)
     }
 
+    fun toggleClockInReminder(enabled: Boolean) {
+        preferences.edit()
+            .putBoolean(profileKey(KEY_CLOCK_IN_REMINDER_ENABLED), enabled)
+            .apply()
+
+        _uiState.value = _uiState.value.copy(
+            clockInReminderEnabled = enabled,
+            reminderSettingsError = null,
+        )
+        rescheduleClockInReminder(_uiState.value)
+    }
+
+    fun updateClockInReminderTime(input: String) {
+        val sanitizedInput = sanitizeTimeInput(input)
+        val parsedTime = parseTimeInput(sanitizedInput)
+        val error = if (sanitizedInput.length >= 4 && parsedTime == null) {
+            "Use time like 08:00."
+        } else {
+            null
+        }
+
+        preferences.edit()
+            .putString(profileKey(KEY_CLOCK_IN_REMINDER_TIME), sanitizedInput)
+            .apply()
+
+        _uiState.value = _uiState.value.copy(
+            clockInReminderTimeInput = sanitizedInput,
+            reminderSettingsError = error,
+        )
+        if (parsedTime != null) {
+            rescheduleClockInReminder(_uiState.value)
+        }
+    }
+
+    fun toggleClockOutReminder(enabled: Boolean) {
+        preferences.edit()
+            .putBoolean(profileKey(KEY_CLOCK_OUT_REMINDER_ENABLED), enabled)
+            .apply()
+
+        _uiState.value = _uiState.value.copy(
+            clockOutReminderEnabled = enabled,
+            reminderSettingsError = null,
+        )
+        if (enabled) {
+            rescheduleLongSessionReminders(_uiState.value)
+        } else {
+            _uiState.value.clockInTime?.let { clockInTime ->
+                cancelLongSessionReminders(
+                    context = getApplication<Application>(),
+                    profileId = _uiState.value.activeProfileId,
+                    clockInMillis = clockInTime.toEpochMilli(),
+                )
+            }
+        }
+    }
+
     private fun refreshActiveDuration() {
         val startedAt = _uiState.value.clockInTime
-        _uiState.value = withDailySummary(
+        val updatedState = withDailySummary(
             _uiState.value.copy(
                 activeDuration = startedAt?.let {
                     Duration.between(it, Instant.now()).coerceAtLeast(Duration.ZERO)
                 } ?: Duration.ZERO,
             ),
         )
+        _uiState.value = updatedState
     }
 
     private fun loadInitialState(): TimeClockUiState {
@@ -731,12 +993,14 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 .apply()
         }
 
-        return buildStateForProfile(
+        val initialState = buildStateForProfile(
             profiles = profiles,
             activeProfile = activeProfile,
             newProfileNameInput = "",
             newProfileStartDateInput = formatDateInput(LocalDate.now()),
         )
+        rescheduleClockInReminder(initialState)
+        return initialState
     }
 
     private fun buildStateForProfile(
@@ -755,6 +1019,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             }
             ?.let(Instant::ofEpochMilli)
         val completedSessions = loadCompletedSessions(activeProfile.id)
+        val absences = loadAbsences(activeProfile.id)
         val expectedDailyHours = getProfileString(activeProfile.id, KEY_EXPECTED_DAILY_HOURS, DEFAULT_DAILY_HOURS_INPUT)
             ?: DEFAULT_DAILY_HOURS_INPUT
         val expectedDailyDuration = expectedDailyHours.toDurationOrNull() ?: DEFAULT_DAILY_DURATION
@@ -795,6 +1060,25 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         )
             ?.let { value -> runCatching { OvertimeRange.valueOf(value) }.getOrNull() }
             ?: OvertimeRange.ALL_TIME
+        val clockOutReminderEnabled = getProfileBoolean(
+            profileId = activeProfile.id,
+            key = KEY_CLOCK_OUT_REMINDER_ENABLED,
+            defaultValue = false,
+        )
+        val clockInReminderEnabled = getProfileBoolean(
+            profileId = activeProfile.id,
+            key = KEY_CLOCK_IN_REMINDER_ENABLED,
+            defaultValue = false,
+        )
+        val clockInReminderTimeInput = getProfileString(
+            profileId = activeProfile.id,
+            key = KEY_CLOCK_IN_REMINDER_TIME,
+            defaultValue = DEFAULT_CLOCK_IN_REMINDER_INPUT,
+        ) ?: DEFAULT_CLOCK_IN_REMINDER_INPUT
+        val clockOutReminderSentMask = preferences.getInt(
+            profileKey(activeProfile.id, KEY_CLOCK_OUT_REMINDER_SENT_MASK),
+            0,
+        )
 
         return withDailySummary(
             TimeClockUiState(
@@ -819,9 +1103,14 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 lunchBreakDuration = lunchBreakDuration,
                 lastCompletedSession = completedSessions.maxByOrNull { it.clockOut },
                 completedSessions = completedSessions,
+                absences = absences,
                 overtimeStartDateInput = overtimeStartDateInput,
                 startingOvertimeBalanceInput = startingOvertimeBalanceInput,
                 selectedOvertimeRange = selectedOvertimeRange,
+                clockInReminderEnabled = clockInReminderEnabled,
+                clockInReminderTimeInput = clockInReminderTimeInput,
+                clockOutReminderEnabled = clockOutReminderEnabled,
+                clockOutReminderSentMask = clockOutReminderSentMask,
             ),
         )
     }
@@ -831,6 +1120,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         val today = LocalDate.now(zoneId)
         val todayCompletedSessions = state.completedSessions.filter { it.overlapsDate(today, zoneId) }
         val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now()) }
+        val todayAbsence = state.absences.firstOrNull { it.date == today }
         val todaySessions = todayCompletedSessions + listOfNotNull(activeSession)
             .filter { it.overlapsDate(today, zoneId) }
 
@@ -845,7 +1135,8 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             Duration.ZERO
         }
         val todayCreditedDuration = todayTotalDuration
-        val isTodayWorkday = LocalDate.now(zoneId).dayOfWeek in state.workDays
+        val isTodayWorkday = LocalDate.now(zoneId).dayOfWeek in state.workDays &&
+            todayAbsence?.type?.coversExpectedHours != true
         val expectedTodayDuration = if (isTodayWorkday) {
             state.expectedDailyDuration.plus(todayBreakDeduction)
         } else {
@@ -865,10 +1156,128 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             todayBalanceDuration = balance,
             todayProgressMessage = formatProgressMessage(
                 isTodayWorkday = isTodayWorkday,
+                absence = todayAbsence,
                 worked = todayCreditedDuration,
                 expected = expectedTodayDuration,
             ),
         )
+    }
+
+    private fun maybeShowClockOutReminder(state: TimeClockUiState): TimeClockUiState {
+        if (state.clockInTime == null) return state
+        if (!state.clockOutReminderEnabled) return state
+        val expectedDuration = expectedDurationForLongSessionAlert(state)
+        if (expectedDuration <= Duration.ZERO) return state
+        val eligibleAlert = LONG_SESSION_ALERTS
+            .mapIndexedNotNull { index, overtimeDuration ->
+                val bit = 1 shl index
+                val threshold = expectedDuration.plus(overtimeDuration)
+                if (state.activeDuration >= threshold && state.clockOutReminderSentMask and bit == 0) {
+                    LongSessionAlert(index = index, overtimeDuration = overtimeDuration)
+                } else {
+                    null
+                }
+            }
+            .lastOrNull()
+            ?: return state
+
+        if (!canPostNotifications()) return state
+
+        showClockOutReminderNotification(
+            state = state,
+            expectedDuration = expectedDuration,
+            overtimeDuration = eligibleAlert.overtimeDuration,
+        )
+        val updatedMask = (0..eligibleAlert.index).fold(state.clockOutReminderSentMask) { mask, index ->
+            mask or (1 shl index)
+        }
+        preferences.edit()
+            .putInt(profileKey(KEY_CLOCK_OUT_REMINDER_SENT_MASK), updatedMask)
+            .apply()
+
+        return state.copy(clockOutReminderSentMask = updatedMask)
+    }
+
+    private fun expectedDurationForLongSessionAlert(state: TimeClockUiState): Duration {
+        if (!state.isTodayWorkday) return Duration.ZERO
+        return state.expectedDailyDuration.plus(
+            if (state.deductUnpaidLunchBreak) state.lunchBreakDuration else Duration.ZERO,
+        )
+    }
+
+    private fun rescheduleClockInReminder(state: TimeClockUiState) {
+        val application = getApplication<Application>()
+        if (!state.clockInReminderEnabled) {
+            cancelClockInReminder(application)
+            return
+        }
+
+        val reminderTime = parseTimeInput(state.clockInReminderTimeInput)
+        if (reminderTime == null) {
+            cancelClockInReminder(application)
+            return
+        }
+
+        scheduleClockInReminder(
+            context = application,
+            profileId = state.activeProfileId,
+            reminderTime = reminderTime,
+            workDays = state.workDays,
+        )
+    }
+
+    private fun rescheduleLongSessionReminders(state: TimeClockUiState) {
+        val clockInTime = state.clockInTime ?: return
+        if (!state.clockOutReminderEnabled) return
+
+        val expectedDuration = expectedDurationForLongSessionAlert(state)
+        if (expectedDuration <= Duration.ZERO) return
+
+        scheduleLongSessionReminders(
+            context = getApplication<Application>(),
+            profileId = state.activeProfileId,
+            clockInMillis = clockInTime.toEpochMilli(),
+            expectedDuration = expectedDuration,
+        )
+    }
+
+    private fun canPostNotifications(): Boolean {
+        val application = getApplication<Application>()
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            application.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun showClockOutReminderNotification(
+        state: TimeClockUiState,
+        expectedDuration: Duration,
+        overtimeDuration: Duration,
+    ) {
+        val application = getApplication<Application>()
+        val intent = Intent(application, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            application,
+            CLOCK_OUT_REMINDER_REQUEST_CODE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = Notification.Builder(application, REMINDER_NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(
+                if (overtimeDuration == Duration.ZERO) {
+                    "Time to clock out"
+                } else {
+                    "${formatDurationShort(overtimeDuration)} overtime"
+                },
+            )
+            .setContentText("${state.activeProfile.name}: ${formatDurationShort(state.activeDuration)} active, target ${formatDurationShort(expectedDuration)}")
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        application.getSystemService(NotificationManager::class.java)
+            .notify(CLOCK_OUT_REMINDER_NOTIFICATION_ID, notification)
     }
 
     private fun loadCompletedSessions(profileId: String = _uiState.value.activeProfileId): List<WorkSession> {
@@ -933,6 +1342,58 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             .remove(KEY_LAST_CLOCK_IN)
             .remove(KEY_LAST_CLOCK_OUT)
             .apply()
+    }
+
+    private fun loadAbsences(profileId: String = _uiState.value.activeProfileId): List<AbsenceEntry> {
+        return preferences.getString(profileKey(profileId, KEY_ABSENCES), null)
+            ?.let(::decodeAbsences)
+            .orEmpty()
+    }
+
+    private fun saveAbsences(absences: List<AbsenceEntry>) {
+        preferences.edit()
+            .putString(profileKey(KEY_ABSENCES), encodeAbsences(absences))
+            .apply()
+    }
+
+    private fun encodeAbsences(absences: List<AbsenceEntry>): String {
+        return absences.joinToString(separator = "\n") { absence ->
+            "${formatDateInput(absence.date)}|${absence.type.name}|${absence.duration.toMinutes()}|${absence.note.replace("|", " ").replace("\n", " ")}"
+        }
+    }
+
+    private fun decodeAbsences(encoded: String): List<AbsenceEntry> {
+        return encoded.lineSequence()
+            .mapNotNull { line ->
+                val parts = line.split("|")
+                val date = parts.getOrNull(0)
+                    ?.let { value -> runCatching { LocalDate.parse(value) }.getOrNull() }
+                    ?: return@mapNotNull null
+                val type = parts.getOrNull(1)
+                    ?.let { value ->
+                        if (value == "PUBLIC_HOLIDAY") {
+                            AbsenceType.VACATION
+                        } else {
+                            runCatching { AbsenceType.valueOf(value) }.getOrNull()
+                        }
+                    }
+                    ?: AbsenceType.VACATION
+                val durationMinutes = parts.getOrNull(2)?.toLongOrNull() ?: 0L
+                val note = if (parts.getOrNull(2)?.toLongOrNull() == null) {
+                    parts.getOrNull(2).orEmpty()
+                } else {
+                    parts.getOrNull(3).orEmpty()
+                }
+
+                AbsenceEntry(
+                    date = date,
+                    type = type,
+                    duration = Duration.ofMinutes(durationMinutes),
+                    note = note,
+                )
+            }
+            .sortedBy { it.date }
+            .toList()
     }
 
     private fun decodeSessions(encoded: String): List<WorkSession> {
@@ -1193,6 +1654,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
     private fun android.content.SharedPreferences.Editor.removeProfileData(profileId: String): android.content.SharedPreferences.Editor {
         return remove(profileKey(profileId, KEY_ACTIVE_CLOCK_IN))
             .remove(profileKey(profileId, KEY_COMPLETED_SESSIONS))
+            .remove(profileKey(profileId, KEY_ABSENCES))
             .remove(profileKey(profileId, KEY_EXPECTED_DAILY_HOURS))
             .remove(profileKey(profileId, KEY_EXPECTED_WEEKLY_HOURS))
             .remove(profileKey(profileId, KEY_WORK_DAYS))
@@ -1201,6 +1663,10 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             .remove(profileKey(profileId, KEY_OVERTIME_START_DATE))
             .remove(profileKey(profileId, KEY_STARTING_OVERTIME_BALANCE))
             .remove(profileKey(profileId, KEY_OVERTIME_RANGE))
+            .remove(profileKey(profileId, KEY_CLOCK_IN_REMINDER_ENABLED))
+            .remove(profileKey(profileId, KEY_CLOCK_IN_REMINDER_TIME))
+            .remove(profileKey(profileId, KEY_CLOCK_OUT_REMINDER_ENABLED))
+            .remove(profileKey(profileId, KEY_CLOCK_OUT_REMINDER_SENT_MASK))
     }
 
     private companion object {
@@ -1209,6 +1675,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         const val KEY_ACTIVE_PROFILE_ID = "active_profile_id"
         const val KEY_ACTIVE_CLOCK_IN = "active_clock_in"
         const val KEY_COMPLETED_SESSIONS = "completed_sessions"
+        const val KEY_ABSENCES = "absences"
         const val KEY_EXPECTED_DAILY_HOURS = "expected_daily_hours"
         const val KEY_EXPECTED_WEEKLY_HOURS = "expected_weekly_hours"
         const val KEY_WORK_DAYS = "work_days"
@@ -1217,6 +1684,10 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         const val KEY_OVERTIME_START_DATE = "overtime_start_date"
         const val KEY_STARTING_OVERTIME_BALANCE = "starting_overtime_balance"
         const val KEY_OVERTIME_RANGE = "overtime_range"
+        const val KEY_CLOCK_IN_REMINDER_ENABLED = "clock_in_reminder_enabled"
+        const val KEY_CLOCK_IN_REMINDER_TIME = "clock_in_reminder_time"
+        const val KEY_CLOCK_OUT_REMINDER_ENABLED = "clock_out_reminder_enabled"
+        const val KEY_CLOCK_OUT_REMINDER_SENT_MASK = "clock_out_reminder_sent_mask"
         const val KEY_LAST_CLOCK_IN = "last_clock_in"
         const val KEY_LAST_CLOCK_OUT = "last_clock_out"
     }
@@ -1241,6 +1712,13 @@ fun TimeClockScreen(
     onManualClockOutChange: (String) -> Unit,
     onManualSessionSave: () -> Unit,
     onManualSessionCancel: () -> Unit,
+    onAbsenceDateChange: (String) -> Unit,
+    onAbsenceEndDateChange: (String) -> Unit,
+    onAbsenceTypeSelect: (AbsenceType) -> Unit,
+    onAbsenceHoursChange: (String) -> Unit,
+    onAbsenceNoteChange: (String) -> Unit,
+    onAbsenceSave: () -> Unit,
+    onAbsenceDelete: (AbsenceEntry) -> Unit,
     onSessionEdit: (WorkSession) -> Unit,
     onSessionDelete: (WorkSession) -> Unit,
     onExpectedDailyHoursChange: (String) -> Unit,
@@ -1251,6 +1729,9 @@ fun TimeClockScreen(
     onOvertimeStartDateChange: (String) -> Unit,
     onStartingOvertimeBalanceChange: (String) -> Unit,
     onOvertimeRangeChange: (OvertimeRange) -> Unit,
+    onClockInReminderToggle: (Boolean) -> Unit,
+    onClockInReminderTimeChange: (String) -> Unit,
+    onClockOutReminderToggle: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Scaffold(
@@ -1308,6 +1789,13 @@ fun TimeClockScreen(
                     onManualClockOutChange = onManualClockOutChange,
                     onManualSessionSave = onManualSessionSave,
                     onManualSessionCancel = onManualSessionCancel,
+                    onAbsenceDateChange = onAbsenceDateChange,
+                    onAbsenceEndDateChange = onAbsenceEndDateChange,
+                    onAbsenceTypeSelect = onAbsenceTypeSelect,
+                    onAbsenceHoursChange = onAbsenceHoursChange,
+                    onAbsenceNoteChange = onAbsenceNoteChange,
+                    onAbsenceSave = onAbsenceSave,
+                    onAbsenceDelete = onAbsenceDelete,
                     onHistoryDayToggle = onHistoryDayToggle,
                     onSessionEdit = onSessionEdit,
                     onSessionDelete = onSessionDelete,
@@ -1331,6 +1819,9 @@ fun TimeClockScreen(
                     onLunchBreakMinutesChange = onLunchBreakMinutesChange,
                     onOvertimeStartDateChange = onOvertimeStartDateChange,
                     onStartingOvertimeBalanceChange = onStartingOvertimeBalanceChange,
+                    onClockInReminderToggle = onClockInReminderToggle,
+                    onClockInReminderTimeChange = onClockInReminderTimeChange,
+                    onClockOutReminderToggle = onClockOutReminderToggle,
                 )
             }
         }
@@ -1390,6 +1881,13 @@ private fun HistoryTab(
     onManualClockOutChange: (String) -> Unit,
     onManualSessionSave: () -> Unit,
     onManualSessionCancel: () -> Unit,
+    onAbsenceDateChange: (String) -> Unit,
+    onAbsenceEndDateChange: (String) -> Unit,
+    onAbsenceTypeSelect: (AbsenceType) -> Unit,
+    onAbsenceHoursChange: (String) -> Unit,
+    onAbsenceNoteChange: (String) -> Unit,
+    onAbsenceSave: () -> Unit,
+    onAbsenceDelete: (AbsenceEntry) -> Unit,
     onHistoryDayToggle: (LocalDate) -> Unit,
     onSessionEdit: (WorkSession) -> Unit,
     onSessionDelete: (WorkSession) -> Unit,
@@ -1406,11 +1904,21 @@ private fun HistoryTab(
             onSave = onManualSessionSave,
             onCancel = onManualSessionCancel,
         )
+        AbsenceEntryCard(
+            state = state,
+            onDateChange = onAbsenceDateChange,
+            onEndDateChange = onAbsenceEndDateChange,
+            onTypeSelect = onAbsenceTypeSelect,
+            onHoursChange = onAbsenceHoursChange,
+            onNoteChange = onAbsenceNoteChange,
+            onSave = onAbsenceSave,
+        )
         HistoryCard(
             state = state,
             onHistoryDayToggle = onHistoryDayToggle,
             onSessionEdit = onSessionEdit,
             onSessionDelete = onSessionDelete,
+            onAbsenceDelete = onAbsenceDelete,
         )
     }
 }
@@ -1449,6 +1957,9 @@ private fun SettingsTab(
     onLunchBreakMinutesChange: (String) -> Unit,
     onOvertimeStartDateChange: (String) -> Unit,
     onStartingOvertimeBalanceChange: (String) -> Unit,
+    onClockInReminderToggle: (Boolean) -> Unit,
+    onClockInReminderTimeChange: (String) -> Unit,
+    onClockOutReminderToggle: (Boolean) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -1472,6 +1983,12 @@ private fun SettingsTab(
             onLunchBreakMinutesChange = onLunchBreakMinutesChange,
             onOvertimeStartDateChange = onOvertimeStartDateChange,
             onStartingOvertimeBalanceChange = onStartingOvertimeBalanceChange,
+        )
+        ReminderSettingsCard(
+            state = state,
+            onClockInReminderToggle = onClockInReminderToggle,
+            onClockInReminderTimeChange = onClockInReminderTimeChange,
+            onClockOutReminderToggle = onClockOutReminderToggle,
         )
     }
 }
@@ -1893,6 +2410,59 @@ private fun WorkHoursSettingsCard(
 }
 
 @Composable
+private fun ReminderSettingsCard(
+    state: TimeClockUiState,
+    onClockInReminderToggle: (Boolean) -> Unit,
+    onClockInReminderTimeChange: (String) -> Unit,
+    onClockOutReminderToggle: (Boolean) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F4FF)),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "Reminders",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            SettingSwitchRow(
+                title = "Clock-in reminder",
+                subtitle = "Notify at your start time on selected workdays",
+                checked = state.clockInReminderEnabled,
+                onCheckedChange = onClockInReminderToggle,
+            )
+            if (state.clockInReminderEnabled) {
+                OutlinedTextField(
+                    value = state.clockInReminderTimeInput,
+                    onValueChange = onClockInReminderTimeChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Start time") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                )
+            }
+            SettingSwitchRow(
+                title = "Long-session alert",
+                subtitle = "Notify at expected clock-out, then 1h, 2h, and 5h overtime",
+                checked = state.clockOutReminderEnabled,
+                onCheckedChange = onClockOutReminderToggle,
+            )
+            state.reminderSettingsError?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFB42318),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun SettingSwitchRow(
     title: String,
     subtitle: String,
@@ -2056,6 +2626,121 @@ private fun ManualEntryCard(
                 }
                 Button(onClick = onSave) {
                     Text(text = if (isEditing) "Save changes" else "Add session")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AbsenceEntryCard(
+    state: TimeClockUiState,
+    onDateChange: (String) -> Unit,
+    onEndDateChange: (String) -> Unit,
+    onTypeSelect: (AbsenceType) -> Unit,
+    onHoursChange: (String) -> Unit,
+    onNoteChange: (String) -> Unit,
+    onSave: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7ED)),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "Absence",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            OutlinedTextField(
+                value = state.absenceDateInput,
+                onValueChange = onDateChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(if (state.selectedAbsenceType.supportsDateRange) "Start date" else "Date") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+            )
+            AbsenceTypeSelector(
+                selectedType = state.selectedAbsenceType,
+                onTypeSelect = onTypeSelect,
+            )
+            if (state.selectedAbsenceType.supportsDateRange) {
+                OutlinedTextField(
+                    value = state.absenceEndDateInput,
+                    onValueChange = onEndDateChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("End date") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                )
+            }
+            if (state.selectedAbsenceType == AbsenceType.TIME_OFF) {
+                OutlinedTextField(
+                    value = state.absenceHoursInput,
+                    onValueChange = onHoursChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Time off hours") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                )
+            }
+            OutlinedTextField(
+                value = state.absenceNoteInput,
+                onValueChange = onNoteChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Note") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+            )
+            state.absenceEntryError?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFB42318),
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                Button(onClick = onSave) {
+                    Text(text = "Add absence")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AbsenceTypeSelector(
+    selectedType: AbsenceType,
+    onTypeSelect: (AbsenceType) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        AbsenceType.entries.chunked(2).forEach { rowTypes ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                rowTypes.forEach { type ->
+                    FilterChip(
+                        selected = type == selectedType,
+                        onClick = { onTypeSelect(type) },
+                        label = {
+                            Text(
+                                text = type.label,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                repeat(2 - rowTypes.size) {
+                    Spacer(modifier = Modifier.weight(1f))
                 }
             }
         }
@@ -2518,6 +3203,7 @@ private fun HistoryCard(
     onHistoryDayToggle: (LocalDate) -> Unit,
     onSessionEdit: (WorkSession) -> Unit,
     onSessionDelete: (WorkSession) -> Unit,
+    onAbsenceDelete: (AbsenceEntry) -> Unit,
 ) {
     val historyDays = buildHistoryDays(state)
 
@@ -2549,6 +3235,7 @@ private fun HistoryCard(
                         onToggle = { onHistoryDayToggle(day.date) },
                         onSessionEdit = onSessionEdit,
                         onSessionDelete = onSessionDelete,
+                        onAbsenceDelete = onAbsenceDelete,
                     )
                 }
             }
@@ -2563,6 +3250,7 @@ private fun HistoryDayRow(
     onToggle: () -> Unit,
     onSessionEdit: (WorkSession) -> Unit,
     onSessionDelete: (WorkSession) -> Unit,
+    onAbsenceDelete: (AbsenceEntry) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -2584,6 +3272,14 @@ private fun HistoryDayRow(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                day.absences.firstOrNull()?.let { absence ->
+                    Text(
+                        text = formatAbsenceLabel(absence),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF92400E),
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
                 Text(
                     text = formatHistoryBalance(day),
                     style = MaterialTheme.typography.bodyMedium,
@@ -2604,6 +3300,12 @@ private fun HistoryDayRow(
         }
 
         if (expanded) {
+            day.absences.forEach { absence ->
+                HistoryAbsenceRow(
+                    absence = absence,
+                    onDelete = { onAbsenceDelete(absence) },
+                )
+            }
             day.sessions.forEach { session ->
                 HistorySessionRow(
                     session = session,
@@ -2611,6 +3313,34 @@ private fun HistoryDayRow(
                     onDelete = { onSessionDelete(session) },
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun HistoryAbsenceRow(
+    absence: AbsenceEntry,
+    onDelete: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.padding(start = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = formatAbsenceLabel(absence),
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color(0xFF92400E),
+            fontWeight = FontWeight.Medium,
+        )
+        if (absence.note.isNotBlank()) {
+            Text(
+                text = absence.note,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        TextButton(onClick = onDelete) {
+            Text(text = "Delete absence")
         }
     }
 }
@@ -2716,9 +3446,12 @@ private fun formatDurationInput(duration: Duration): String {
 
 private fun formatProgressMessage(
     isTodayWorkday: Boolean,
+    absence: AbsenceEntry?,
     worked: Duration,
     expected: Duration,
 ): String {
+    if (absence != null && absence.type.coversExpectedHours) return "${absence.type.label} today"
+    if (absence?.type == AbsenceType.TIME_OFF) return "${formatHoursAndMinutes(absence.duration)} time off today"
     if (!isTodayWorkday) return "No hours expected today"
 
     val balance = worked.minus(expected)
@@ -2731,10 +3464,13 @@ private fun formatProgressMessage(
 
 private fun buildHistoryDays(state: TimeClockUiState): List<WorkDayHistory> {
     val zoneId = ZoneId.systemDefault()
+    val sessionsByDate = state.completedSessions.groupBy { it.clockIn.atZone(zoneId).toLocalDate() }
+    val absencesByDate = state.absences.groupBy { it.date }
+    val historyDates = (sessionsByDate.keys + absencesByDate.keys).toSet()
 
-    return state.completedSessions
-        .groupBy { it.clockIn.atZone(zoneId).toLocalDate() }
-        .map { (date, sessions) ->
+    return historyDates
+        .map { date ->
+            val sessions = sessionsByDate[date].orEmpty()
             val sortedSessions = sessions.sortedBy { it.clockIn }
             val totalDuration = sortedSessions.fold(Duration.ZERO) { total, session ->
                 total.plus(session.duration)
@@ -2744,6 +3480,7 @@ private fun buildHistoryDays(state: TimeClockUiState): List<WorkDayHistory> {
             WorkDayHistory(
                 date = date,
                 sessions = sortedSessions,
+                absences = absencesByDate[date].orEmpty(),
                 totalDuration = totalDuration,
                 expectedDuration = expectedDuration,
             )
@@ -2942,7 +3679,8 @@ private fun expectedDurationForRange(
     var expected = Duration.ZERO
 
     while (!date.isAfter(endDate)) {
-        if (date.dayOfWeek in state.workDays) {
+        val hasCoveredAbsence = state.absences.any { it.date == date && it.type.coversExpectedHours }
+        if (date.dayOfWeek in state.workDays && !hasCoveredAbsence) {
             expected = expected.plus(dailyExpected)
         }
         date = date.plusDays(1)
@@ -2952,6 +3690,11 @@ private fun expectedDurationForRange(
 }
 
 private fun formatHistoryBalance(day: WorkDayHistory): String {
+    val coveredAbsence = day.absences.firstOrNull { it.type.coversExpectedHours }
+    if (coveredAbsence != null) {
+        return "Covered by ${coveredAbsence.type.label.lowercase()}"
+    }
+
     if (day.expectedDuration == Duration.ZERO) {
         return "No hours expected"
     }
@@ -2972,6 +3715,14 @@ private fun formatReportBalance(report: WorkReport): String {
         report.balanceDuration.isNegative -> "${formatHoursAndMinutes(report.balanceDuration.abs())} missing"
         report.balanceDuration == Duration.ZERO -> "On target"
         else -> "${formatHoursAndMinutes(report.balanceDuration)} ahead"
+    }
+}
+
+private fun formatAbsenceLabel(absence: AbsenceEntry): String {
+    return if (absence.type == AbsenceType.TIME_OFF) {
+        "${absence.type.label}: ${formatHoursAndMinutes(absence.duration)}"
+    } else {
+        absence.type.label
     }
 }
 
@@ -3090,6 +3841,12 @@ private fun formatDateInput(date: LocalDate): String {
     return DATE_INPUT_FORMATTER.format(date)
 }
 
+private fun buildDateRange(startDate: LocalDate, endDate: LocalDate): List<LocalDate> {
+    return generateSequence(startDate) { date ->
+        date.plusDays(1).takeUnless { it.isAfter(endDate) }
+    }.toList()
+}
+
 private val TimeClockUiState.activeProfile: WorkProfile
     get() = workProfiles.firstOrNull { it.id == activeProfileId } ?: workProfiles.first()
 
@@ -3105,6 +3862,10 @@ private val DATE_INPUT_FORMATTER: DateTimeFormatter = DateTimeFormatter.ISO_LOCA
 private val HISTORY_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE, d MMM yyyy")
 private const val DEFAULT_WORK_PROFILE_ID = "default_profile"
 private const val DEFAULT_WORK_PROFILE_NAME = "My workplace"
+private const val REMINDER_NOTIFICATION_CHANNEL_ID = "time_clock_reminders"
+private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1201
+private const val CLOCK_OUT_REMINDER_REQUEST_CODE = 1202
+private const val CLOCK_OUT_REMINDER_NOTIFICATION_ID = 1203
 private val DEFAULT_WORK_PROFILE = WorkProfile(
     id = DEFAULT_WORK_PROFILE_ID,
     name = DEFAULT_WORK_PROFILE_NAME,
@@ -3117,6 +3878,13 @@ private val MAX_EXPECTED_MINUTES = 7L * 24L * 60L
 private val DEFAULT_LUNCH_BREAK_MINUTES = 30L
 private val DEFAULT_LUNCH_BREAK_MINUTES_INPUT = "30"
 private val DEFAULT_STARTING_OVERTIME_BALANCE_INPUT = "0:00"
+private val DEFAULT_CLOCK_IN_REMINDER_INPUT = "08:00"
+private val LONG_SESSION_ALERTS = listOf(
+    Duration.ZERO,
+    Duration.ofHours(1),
+    Duration.ofHours(2),
+    Duration.ofHours(5),
+)
 private val DEFAULT_WORK_DAYS = setOf(
     DayOfWeek.MONDAY,
     DayOfWeek.TUESDAY,
@@ -3194,6 +3962,13 @@ private fun ClockedOutPreview() {
             onManualClockOutChange = {},
             onManualSessionSave = {},
             onManualSessionCancel = {},
+            onAbsenceDateChange = {},
+            onAbsenceEndDateChange = {},
+            onAbsenceTypeSelect = {},
+            onAbsenceHoursChange = {},
+            onAbsenceNoteChange = {},
+            onAbsenceSave = {},
+            onAbsenceDelete = {},
             onSessionEdit = {},
             onSessionDelete = {},
             onExpectedDailyHoursChange = {},
@@ -3204,6 +3979,9 @@ private fun ClockedOutPreview() {
             onOvertimeStartDateChange = {},
             onStartingOvertimeBalanceChange = {},
             onOvertimeRangeChange = {},
+            onClockInReminderToggle = {},
+            onClockInReminderTimeChange = {},
+            onClockOutReminderToggle = {},
         )
     }
 }
@@ -3250,6 +4028,13 @@ private fun ClockedInPreview() {
             onManualClockOutChange = {},
             onManualSessionSave = {},
             onManualSessionCancel = {},
+            onAbsenceDateChange = {},
+            onAbsenceEndDateChange = {},
+            onAbsenceTypeSelect = {},
+            onAbsenceHoursChange = {},
+            onAbsenceNoteChange = {},
+            onAbsenceSave = {},
+            onAbsenceDelete = {},
             onSessionEdit = {},
             onSessionDelete = {},
             onExpectedDailyHoursChange = {},
@@ -3260,6 +4045,9 @@ private fun ClockedInPreview() {
             onOvertimeStartDateChange = {},
             onStartingOvertimeBalanceChange = {},
             onOvertimeRangeChange = {},
+            onClockInReminderToggle = {},
+            onClockInReminderTimeChange = {},
+            onClockOutReminderToggle = {},
         )
     }
 }

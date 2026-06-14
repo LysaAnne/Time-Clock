@@ -4,7 +4,7 @@ This is a Kotlin Android app for tracking work clock-in and clock-out sessions.
 
 ## Current Version
 
-Features 1, 2, 3, 4, 5, 7, 8, 9, 10, and 11 are implemented. Feature 6 was intentionally skipped.
+Features 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, and 13 are implemented. Feature 6 was intentionally skipped.
 
 - Clock in
 - Clock out
@@ -57,6 +57,16 @@ Features 1, 2, 3, 4, 5, 7, 8, 9, 10, and 11 are implemented. Feature 6 was inten
 - Move manual entries and past sessions into History
 - Move reports, charts, and full overtime details into Insights
 - Move work profiles and work-hour settings into Settings
+- Enable profile-specific clock-in reminders near your work start time
+- Enable profile-specific clock-out reminders
+- Get a clock-out reminder when your active session reaches the expected daily work time
+- Get follow-up overtime reminders at 1, 2, and 5 hours over expected daily work time
+- Add full-day vacation/holiday, sick day, and no-work absence entries
+- Add vacation/holiday ranges with start and end dates
+- Add sickness for one day or a date range
+- Add time-off hours that use overtime balance
+- Keep absence entries separate per work profile
+- Prevent absence days from counting as missing hours in reports, charts, history, and overtime balance
 
 Expected time inputs accept formats like `7:30`, `7h30m`, `7 30`, `450m`, or decimal hours like `7.5`.
 Starting overtime balance accepts formats like `2:30` or `-1:15` and is applied to the all-time overtime balance.
@@ -73,6 +83,6 @@ Manual sessions use date format `YYYY-MM-DD` and time format `HH:mm`.
 
 The next recommended feature is:
 
-**Reminders and notifications.**
+**Home screen widgets.**
 
-That will help you remember to clock in and clock out. After that, home screen widgets are planned for quick clocking, daily progress, and overtime balance.
+That will add quick clocking, daily progress, and overtime balance directly from the Android home screen.
