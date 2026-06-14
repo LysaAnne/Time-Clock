@@ -235,6 +235,8 @@ Implemented:
 
 Track whether the user is ahead or behind.
 
+Status: **Built in version 0.8.0**
+
 Consider:
 
 - Running overtime balance
@@ -244,6 +246,19 @@ Consider:
 - Carry overtime across periods
 - Reset balance from a chosen date
 - Optional starting balance if the user already has overtime hours
+
+Implemented:
+
+- Overtime balance card on the main screen
+- Running total balance since a chosen start date
+- Selectable balance ranges: today, 1 week, 4 weeks, 1 month, 6 months, 12 months, and all time
+- Actual hours since the balance start date
+- Expected hours since the balance start date
+- Period balance
+- Optional starting overtime balance
+- Positive and negative balance display
+- Balance range, start date, and starting balance saved locally
+- Starting balance applied to the all-time overtime balance
 
 ### 9. Charts and Visuals
 

@@ -89,6 +89,9 @@ class MainActivity : ComponentActivity() {
                     onWorkdayToggle = viewModel::toggleWorkday,
                     onUnpaidLunchBreakToggle = viewModel::toggleUnpaidLunchBreak,
                     onLunchBreakMinutesChange = viewModel::updateLunchBreakMinutes,
+                    onOvertimeStartDateChange = viewModel::updateOvertimeStartDate,
+                    onStartingOvertimeBalanceChange = viewModel::updateStartingOvertimeBalance,
+                    onOvertimeRangeChange = viewModel::updateOvertimeRange,
                 )
             }
         }
@@ -126,6 +129,10 @@ data class TimeClockUiState(
     val manualEntryError: String? = null,
     val editingSessionClockInMillis: Long? = null,
     val editingSessionClockOutMillis: Long? = null,
+    val overtimeStartDateInput: String = formatDateInput(LocalDate.now()),
+    val startingOvertimeBalanceInput: String = "0:00",
+    val selectedOvertimeRange: OvertimeRange = OvertimeRange.ALL_TIME,
+    val overtimeSettingsError: String? = null,
 )
 
 data class WorkSession(
@@ -150,6 +157,27 @@ data class WorkReport(
     val expectedDuration: Duration,
 ) {
     val balanceDuration: Duration = actualDuration.minus(expectedDuration)
+}
+
+data class OvertimeBalance(
+    val range: OvertimeRange,
+    val startDate: LocalDate,
+    val actualDuration: Duration,
+    val expectedDuration: Duration,
+    val startingBalance: Duration,
+) {
+    val periodBalance: Duration = actualDuration.minus(expectedDuration)
+    val totalBalance: Duration = startingBalance.plus(periodBalance)
+}
+
+enum class OvertimeRange(val label: String) {
+    TODAY("Today"),
+    ONE_WEEK("1 week"),
+    FOUR_WEEKS("4 weeks"),
+    ONE_MONTH("1 month"),
+    SIX_MONTHS("6 months"),
+    TWELVE_MONTHS("12 months"),
+    ALL_TIME("All time"),
 }
 
 class TimeClockViewModel(application: Application) : AndroidViewModel(application) {
@@ -423,6 +451,50 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         )
     }
 
+    fun updateOvertimeStartDate(input: String) {
+        val sanitizedInput = input.take(10)
+        val error = if (sanitizedInput.length == 10 && runCatching { LocalDate.parse(sanitizedInput) }.isFailure) {
+            "Use date format YYYY-MM-DD."
+        } else {
+            null
+        }
+
+        preferences.edit()
+            .putString(KEY_OVERTIME_START_DATE, sanitizedInput)
+            .apply()
+
+        _uiState.value = _uiState.value.copy(
+            overtimeStartDateInput = sanitizedInput,
+            overtimeSettingsError = error,
+        )
+    }
+
+    fun updateStartingOvertimeBalance(input: String) {
+        val sanitizedInput = sanitizeSignedDurationInput(input)
+        val error = if (sanitizedInput.isNotBlank() && sanitizedInput.toSignedDurationOrNull() == null) {
+            "Use balance like 2:30 or -1:15."
+        } else {
+            null
+        }
+
+        preferences.edit()
+            .putString(KEY_STARTING_OVERTIME_BALANCE, sanitizedInput)
+            .apply()
+
+        _uiState.value = _uiState.value.copy(
+            startingOvertimeBalanceInput = sanitizedInput,
+            overtimeSettingsError = error,
+        )
+    }
+
+    fun updateOvertimeRange(range: OvertimeRange) {
+        preferences.edit()
+            .putString(KEY_OVERTIME_RANGE, range.name)
+            .apply()
+
+        _uiState.value = _uiState.value.copy(selectedOvertimeRange = range)
+    }
+
     private fun refreshActiveDuration() {
         val startedAt = _uiState.value.clockInTime
         _uiState.value = withDailySummary(
@@ -455,6 +527,15 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         val lunchBreakDuration = Duration.ofMinutes(
             lunchBreakMinutesInput.toLongOrNull()?.coerceIn(0L, 240L) ?: DEFAULT_LUNCH_BREAK_MINUTES,
         )
+        val overtimeStartDateInput = preferences.getString(KEY_OVERTIME_START_DATE, null)
+            ?: formatDateInput(LocalDate.now())
+        val startingOvertimeBalanceInput = preferences.getString(
+            KEY_STARTING_OVERTIME_BALANCE,
+            DEFAULT_STARTING_OVERTIME_BALANCE_INPUT,
+        ) ?: DEFAULT_STARTING_OVERTIME_BALANCE_INPUT
+        val selectedOvertimeRange = preferences.getString(KEY_OVERTIME_RANGE, OvertimeRange.ALL_TIME.name)
+            ?.let { value -> runCatching { OvertimeRange.valueOf(value) }.getOrNull() }
+            ?: OvertimeRange.ALL_TIME
 
         return withDailySummary(
             TimeClockUiState(
@@ -473,6 +554,9 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 lunchBreakDuration = lunchBreakDuration,
                 lastCompletedSession = completedSessions.maxByOrNull { it.clockOut },
                 completedSessions = completedSessions,
+                overtimeStartDateInput = overtimeStartDateInput,
+                startingOvertimeBalanceInput = startingOvertimeBalanceInput,
+                selectedOvertimeRange = selectedOvertimeRange,
             ),
         )
     }
@@ -583,6 +667,16 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         return input
             .filter { it.isDigit() || it == ':' || it == '.' || it == ',' || it == 'h' || it == 'H' || it == 'm' || it == 'M' || it.isWhitespace() }
             .take(12)
+    }
+
+    private fun sanitizeSignedDurationInput(input: String): String {
+        val sanitized = input
+            .filter { it.isDigit() || it == ':' || it == '.' || it == ',' || it == 'h' || it == 'H' || it == 'm' || it == 'M' || it == '-' || it == '+' || it.isWhitespace() }
+            .take(13)
+
+        val sign = sanitized.firstOrNull { it == '-' || it == '+' }?.toString().orEmpty()
+        val unsigned = sanitized.filterNot { it == '-' || it == '+' }
+        return sign + unsigned
     }
 
     private fun sanitizeWholeNumberInput(input: String): String {
@@ -713,6 +807,9 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         const val KEY_WORK_DAYS = "work_days"
         const val KEY_DEDUCT_UNPAID_LUNCH_BREAK = "deduct_unpaid_lunch_break"
         const val KEY_LUNCH_BREAK_MINUTES = "lunch_break_minutes"
+        const val KEY_OVERTIME_START_DATE = "overtime_start_date"
+        const val KEY_STARTING_OVERTIME_BALANCE = "starting_overtime_balance"
+        const val KEY_OVERTIME_RANGE = "overtime_range"
         const val KEY_LAST_CLOCK_IN = "last_clock_in"
         const val KEY_LAST_CLOCK_OUT = "last_clock_out"
     }
@@ -737,6 +834,9 @@ fun TimeClockScreen(
     onWorkdayToggle: (DayOfWeek) -> Unit,
     onUnpaidLunchBreakToggle: (Boolean) -> Unit,
     onLunchBreakMinutesChange: (String) -> Unit,
+    onOvertimeStartDateChange: (String) -> Unit,
+    onStartingOvertimeBalanceChange: (String) -> Unit,
+    onOvertimeRangeChange: (OvertimeRange) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Scaffold(
@@ -811,6 +911,8 @@ fun TimeClockScreen(
                     onWorkdayToggle = onWorkdayToggle,
                     onUnpaidLunchBreakToggle = onUnpaidLunchBreakToggle,
                     onLunchBreakMinutesChange = onLunchBreakMinutesChange,
+                    onOvertimeStartDateChange = onOvertimeStartDateChange,
+                    onStartingOvertimeBalanceChange = onStartingOvertimeBalanceChange,
                 )
                 LastSessionCard(session = state.lastCompletedSession)
                 ManualEntryCard(
@@ -822,6 +924,10 @@ fun TimeClockScreen(
                     onCancel = onManualSessionCancel,
                 )
                 ReportsCard(state = state)
+                OvertimeBalanceCard(
+                    state = state,
+                    onOvertimeRangeChange = onOvertimeRangeChange,
+                )
                 HistoryCard(
                     state = state,
                     onHistoryDayToggle = onHistoryDayToggle,
@@ -928,6 +1034,8 @@ private fun WorkHoursSettingsCard(
     onWorkdayToggle: (DayOfWeek) -> Unit,
     onUnpaidLunchBreakToggle: (Boolean) -> Unit,
     onLunchBreakMinutesChange: (String) -> Unit,
+    onOvertimeStartDateChange: (String) -> Unit,
+    onStartingOvertimeBalanceChange: (String) -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1002,6 +1110,29 @@ private fun WorkHoursSettingsCard(
                     label = { Text("Lunch break minutes") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                )
+            }
+            OutlinedTextField(
+                value = state.overtimeStartDateInput,
+                onValueChange = onOvertimeStartDateChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Overtime balance start date") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+            )
+            OutlinedTextField(
+                value = state.startingOvertimeBalanceInput,
+                onValueChange = onStartingOvertimeBalanceChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Starting overtime balance") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+            )
+            state.overtimeSettingsError?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFB42318),
                 )
             }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1267,6 +1398,98 @@ private fun ReportRow(report: WorkReport) {
                 text = "Expected ${formatHoursAndMinutes(report.expectedDuration)}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun OvertimeBalanceCard(
+    state: TimeClockUiState,
+    onOvertimeRangeChange: (OvertimeRange) -> Unit,
+) {
+    val balance = buildOvertimeBalance(state)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F4FF)),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "Overtime balance",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OvertimeRangeRow(
+                    ranges = OVERTIME_RANGE_ROW_ONE,
+                    selectedRange = state.selectedOvertimeRange,
+                    onOvertimeRangeChange = onOvertimeRangeChange,
+                )
+                OvertimeRangeRow(
+                    ranges = OVERTIME_RANGE_ROW_TWO,
+                    selectedRange = state.selectedOvertimeRange,
+                    onOvertimeRangeChange = onOvertimeRangeChange,
+                )
+            }
+            Text(
+                text = formatSignedBalance(balance.totalBalance),
+                fontSize = 34.sp,
+                lineHeight = 38.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (balance.totalBalance.isNegative) {
+                    Color(0xFFB42318)
+                } else {
+                    Color(0xFF0F766E)
+                },
+            )
+            Text(
+                text = "${balance.range.label} since ${formatDateInput(balance.startDate)}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                TimeStamp(label = "Actual", value = formatHoursAndMinutes(balance.actualDuration))
+                TimeStamp(label = "Expected", value = formatHoursAndMinutes(balance.expectedDuration))
+                TimeStamp(label = "Start", value = formatSignedBalance(balance.startingBalance))
+            }
+            Text(
+                text = "Period balance ${formatSignedBalance(balance.periodBalance)}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun OvertimeRangeRow(
+    ranges: List<OvertimeRange>,
+    selectedRange: OvertimeRange,
+    onOvertimeRangeChange: (OvertimeRange) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        ranges.forEach { range ->
+            FilterChip(
+                selected = range == selectedRange,
+                onClick = { onOvertimeRangeChange(range) },
+                label = {
+                    Text(
+                        text = range.label,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                },
+                modifier = Modifier.weight(1f),
             )
         }
     }
@@ -1548,6 +1771,49 @@ private fun buildReports(state: TimeClockUiState): List<WorkReport> {
     )
 }
 
+private fun buildOvertimeBalance(state: TimeClockUiState): OvertimeBalance {
+    val allTimeStartDate = runCatching { LocalDate.parse(state.overtimeStartDateInput) }
+        .getOrNull()
+        ?: LocalDate.now()
+    val today = LocalDate.now()
+    val startDate = startDateForOvertimeRange(
+        range = state.selectedOvertimeRange,
+        allTimeStartDate = allTimeStartDate,
+        today = today,
+    )
+    val actualDuration = actualDurationForRange(startDate, today, state)
+    val expectedDuration = expectedDurationForRange(startDate, today, state)
+    val startingBalance = if (state.selectedOvertimeRange == OvertimeRange.ALL_TIME) {
+        state.startingOvertimeBalanceInput.toSignedDurationOrNull() ?: Duration.ZERO
+    } else {
+        Duration.ZERO
+    }
+
+    return OvertimeBalance(
+        range = state.selectedOvertimeRange,
+        startDate = startDate,
+        actualDuration = actualDuration,
+        expectedDuration = expectedDuration,
+        startingBalance = startingBalance,
+    )
+}
+
+private fun startDateForOvertimeRange(
+    range: OvertimeRange,
+    allTimeStartDate: LocalDate,
+    today: LocalDate,
+): LocalDate {
+    return when (range) {
+        OvertimeRange.TODAY -> today
+        OvertimeRange.ONE_WEEK -> today.minusWeeks(1).plusDays(1)
+        OvertimeRange.FOUR_WEEKS -> today.minusWeeks(4).plusDays(1)
+        OvertimeRange.ONE_MONTH -> today.minusMonths(1).plusDays(1)
+        OvertimeRange.SIX_MONTHS -> today.minusMonths(6).plusDays(1)
+        OvertimeRange.TWELVE_MONTHS -> today.minusMonths(12).plusDays(1)
+        OvertimeRange.ALL_TIME -> allTimeStartDate
+    }
+}
+
 private fun buildReport(
     label: String,
     startDate: LocalDate,
@@ -1631,6 +1897,71 @@ private fun formatReportBalance(report: WorkReport): String {
     }
 }
 
+private fun formatSignedBalance(duration: Duration): String {
+    return when {
+        duration.isNegative -> "-${formatHoursAndMinutes(duration.abs())}"
+        duration == Duration.ZERO -> "0h 00m"
+        else -> "+${formatHoursAndMinutes(duration)}"
+    }
+}
+
+private fun String.toSignedDurationOrNull(): Duration? {
+    val trimmed = trim()
+    if (trimmed.isBlank()) return Duration.ZERO
+
+    val isNegative = trimmed.startsWith("-")
+    val unsigned = trimmed.removePrefix("-").removePrefix("+")
+    val duration = parseDurationInput(unsigned) ?: return null
+    return if (isNegative) duration.negated() else duration
+}
+
+private fun parseDurationInput(input: String): Duration? {
+    val normalized = input.trim().lowercase().replace(',', '.')
+    if (normalized.isBlank()) return null
+
+    val minutes = when {
+        ":" in normalized -> parseColonDurationInput(normalized)
+        "h" in normalized || "m" in normalized -> parseLabeledDurationInput(normalized)
+        normalized.contains(" ") -> parseSpacedDurationInput(normalized)
+        else -> normalized.toDoubleOrNull()?.let { (it * 60).toLong() }
+    } ?: return null
+
+    if (minutes < 0L || minutes > MAX_EXPECTED_MINUTES) return null
+    return Duration.ofMinutes(minutes)
+}
+
+private fun parseColonDurationInput(input: String): Long? {
+    val parts = input.split(":")
+    val hours = parts.getOrNull(0)?.trim()?.toLongOrNull() ?: return null
+    val minutes = parts.getOrNull(1)?.trim()?.toLongOrNull() ?: 0L
+    if (parts.size > 2 || minutes !in 0L..59L) return null
+    return hours * 60 + minutes
+}
+
+private fun parseLabeledDurationInput(input: String): Long? {
+    val hours = Regex("""(\d+(?:\.\d+)?)\s*h""").find(input)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.toDoubleOrNull()
+        ?: 0.0
+    val minutes = Regex("""(\d+)\s*m""").find(input)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.toLongOrNull()
+        ?: 0L
+
+    if ("h" !in input && "m" !in input) return null
+    return (hours * 60).toLong() + minutes
+}
+
+private fun parseSpacedDurationInput(input: String): Long? {
+    val parts = input.split(Regex("""\s+""")).filter { it.isNotBlank() }
+    val hours = parts.getOrNull(0)?.toLongOrNull() ?: return null
+    val minutes = parts.getOrNull(1)?.toLongOrNull() ?: 0L
+    if (parts.size > 2 || minutes !in 0L..59L) return null
+    return hours * 60 + minutes
+}
+
 private fun DayOfWeek.shortLabel(): String {
     return when (this) {
         DayOfWeek.MONDAY -> "Mon"
@@ -1661,6 +1992,7 @@ private val DEFAULT_DAILY_DURATION = Duration.ofHours(7).plusMinutes(30)
 private val MAX_EXPECTED_MINUTES = 7L * 24L * 60L
 private val DEFAULT_LUNCH_BREAK_MINUTES = 30L
 private val DEFAULT_LUNCH_BREAK_MINUTES_INPUT = "30"
+private val DEFAULT_STARTING_OVERTIME_BALANCE_INPUT = "0:00"
 private val DEFAULT_WORK_DAYS = setOf(
     DayOfWeek.MONDAY,
     DayOfWeek.TUESDAY,
@@ -1678,6 +2010,17 @@ private val WORK_DAYS_ROW_TWO = listOf(
     DayOfWeek.FRIDAY,
     DayOfWeek.SATURDAY,
     DayOfWeek.SUNDAY,
+)
+private val OVERTIME_RANGE_ROW_ONE = listOf(
+    OvertimeRange.TODAY,
+    OvertimeRange.ONE_WEEK,
+    OvertimeRange.FOUR_WEEKS,
+    OvertimeRange.ONE_MONTH,
+)
+private val OVERTIME_RANGE_ROW_TWO = listOf(
+    OvertimeRange.SIX_MONTHS,
+    OvertimeRange.TWELVE_MONTHS,
+    OvertimeRange.ALL_TIME,
 )
 
 @Preview(showBackground = true)
@@ -1728,6 +2071,9 @@ private fun ClockedOutPreview() {
             onWorkdayToggle = {},
             onUnpaidLunchBreakToggle = {},
             onLunchBreakMinutesChange = {},
+            onOvertimeStartDateChange = {},
+            onStartingOvertimeBalanceChange = {},
+            onOvertimeRangeChange = {},
         )
     }
 }
@@ -1774,6 +2120,9 @@ private fun ClockedInPreview() {
             onWorkdayToggle = {},
             onUnpaidLunchBreakToggle = {},
             onLunchBreakMinutesChange = {},
+            onOvertimeStartDateChange = {},
+            onStartingOvertimeBalanceChange = {},
+            onOvertimeRangeChange = {},
         )
     }
 }
