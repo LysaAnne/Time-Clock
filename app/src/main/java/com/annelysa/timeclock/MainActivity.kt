@@ -26,13 +26,21 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -41,9 +49,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -79,6 +91,7 @@ class MainActivity : ComponentActivity() {
 
                 TimeClockScreen(
                     state = state,
+                    onTabSelect = viewModel::selectTab,
                     onClockIn = viewModel::clockIn,
                     onClockOut = viewModel::clockOut,
                     onProfileSelect = viewModel::selectProfile,
@@ -87,6 +100,7 @@ class MainActivity : ComponentActivity() {
                     onNewProfileNameChange = viewModel::updateNewProfileName,
                     onNewProfileStartDateChange = viewModel::updateNewProfileStartDate,
                     onProfileCreate = viewModel::createProfile,
+                    onProfileDelete = viewModel::deleteActiveProfile,
                     onHistoryDayToggle = viewModel::toggleHistoryDay,
                     onManualDateChange = viewModel::updateManualDate,
                     onManualClockInChange = viewModel::updateManualClockIn,
@@ -95,7 +109,6 @@ class MainActivity : ComponentActivity() {
                     onManualSessionCancel = viewModel::cancelManualEdit,
                     onSessionEdit = viewModel::startEditingSession,
                     onSessionDelete = viewModel::deleteSession,
-                    onSettingsExpandedToggle = viewModel::toggleSettingsExpanded,
                     onExpectedDailyHoursChange = viewModel::updateExpectedDailyHours,
                     onExpectedWeeklyHoursChange = viewModel::updateExpectedWeeklyHours,
                     onWorkdayToggle = viewModel::toggleWorkday,
@@ -111,6 +124,7 @@ class MainActivity : ComponentActivity() {
 }
 
 data class TimeClockUiState(
+    val selectedTab: AppTab = AppTab.TODAY,
     val workProfiles: List<WorkProfile> = listOf(DEFAULT_WORK_PROFILE),
     val activeProfileId: String = DEFAULT_WORK_PROFILE.id,
     val activeProfileNameInput: String = DEFAULT_WORK_PROFILE.name,
@@ -127,7 +141,6 @@ data class TimeClockUiState(
     val todaySessionCount: Int = 0,
     val todayFirstClockIn: Instant? = null,
     val todayLastClockOut: Instant? = null,
-    val isSettingsExpanded: Boolean = false,
     val expectedDailyHoursInput: String = "7:30",
     val expectedDailyDuration: Duration = Duration.ofHours(7).plusMinutes(30),
     val expectedWeeklyHoursInput: String = "37:30",
@@ -239,6 +252,16 @@ enum class DayVisualStatus {
     NO_TARGET,
 }
 
+enum class AppTab(
+    val label: String,
+    val icon: ImageVector,
+) {
+    TODAY("Today", Icons.Default.Today),
+    HISTORY("History", Icons.Default.History),
+    INSIGHTS("Insights", Icons.Default.BarChart),
+    SETTINGS("Settings", Icons.Default.Settings),
+}
+
 class TimeClockViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val _uiState = MutableStateFlow(loadInitialState())
@@ -252,6 +275,10 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 delay(1_000)
             }
         }
+    }
+
+    fun selectTab(tab: AppTab) {
+        _uiState.value = _uiState.value.copy(selectedTab = tab)
     }
 
     fun selectProfile(profileId: String) {
@@ -356,6 +383,31 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             activeProfile = newProfile,
             newProfileNameInput = "",
             newProfileStartDateInput = formatDateInput(LocalDate.now()),
+        )
+    }
+
+    fun deleteActiveProfile() {
+        val state = _uiState.value
+        if (state.workProfiles.size <= 1) {
+            _uiState.value = state.copy(profileError = "You need at least one workplace.")
+            return
+        }
+
+        val deletedProfileId = state.activeProfileId
+        val updatedProfiles = state.workProfiles.filterNot { it.id == deletedProfileId }
+        val nextProfile = updatedProfiles.first()
+
+        saveProfiles(updatedProfiles)
+        preferences.edit()
+            .putString(KEY_ACTIVE_PROFILE_ID, nextProfile.id)
+            .removeProfileData(deletedProfileId)
+            .apply()
+
+        _uiState.value = buildStateForProfile(
+            profiles = updatedProfiles,
+            activeProfile = nextProfile,
+            newProfileNameInput = state.newProfileNameInput,
+            newProfileStartDateInput = state.newProfileStartDateInput,
         )
     }
 
@@ -573,12 +625,6 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                     .dividedByWorkdays(updatedDays.size)
                     .let(::formatDurationInput),
             ),
-        )
-    }
-
-    fun toggleSettingsExpanded() {
-        _uiState.value = _uiState.value.copy(
-            isSettingsExpanded = !_uiState.value.isSettingsExpanded,
         )
     }
 
@@ -1144,6 +1190,19 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         return if (contains(key)) getLong(key, 0L) else null
     }
 
+    private fun android.content.SharedPreferences.Editor.removeProfileData(profileId: String): android.content.SharedPreferences.Editor {
+        return remove(profileKey(profileId, KEY_ACTIVE_CLOCK_IN))
+            .remove(profileKey(profileId, KEY_COMPLETED_SESSIONS))
+            .remove(profileKey(profileId, KEY_EXPECTED_DAILY_HOURS))
+            .remove(profileKey(profileId, KEY_EXPECTED_WEEKLY_HOURS))
+            .remove(profileKey(profileId, KEY_WORK_DAYS))
+            .remove(profileKey(profileId, KEY_DEDUCT_UNPAID_LUNCH_BREAK))
+            .remove(profileKey(profileId, KEY_LUNCH_BREAK_MINUTES))
+            .remove(profileKey(profileId, KEY_OVERTIME_START_DATE))
+            .remove(profileKey(profileId, KEY_STARTING_OVERTIME_BALANCE))
+            .remove(profileKey(profileId, KEY_OVERTIME_RANGE))
+    }
+
     private companion object {
         const val PREFS_NAME = "time_clock_preferences"
         const val KEY_WORK_PROFILES = "work_profiles"
@@ -1166,6 +1225,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
 @Composable
 fun TimeClockScreen(
     state: TimeClockUiState,
+    onTabSelect: (AppTab) -> Unit,
     onClockIn: () -> Unit,
     onClockOut: () -> Unit,
     onProfileSelect: (String) -> Unit,
@@ -1174,6 +1234,7 @@ fun TimeClockScreen(
     onNewProfileNameChange: (String) -> Unit,
     onNewProfileStartDateChange: (String) -> Unit,
     onProfileCreate: () -> Unit,
+    onProfileDelete: () -> Unit,
     onHistoryDayToggle: (LocalDate) -> Unit,
     onManualDateChange: (String) -> Unit,
     onManualClockInChange: (String) -> Unit,
@@ -1182,7 +1243,6 @@ fun TimeClockScreen(
     onManualSessionCancel: () -> Unit,
     onSessionEdit: (WorkSession) -> Unit,
     onSessionDelete: (WorkSession) -> Unit,
-    onSettingsExpandedToggle: () -> Unit,
     onExpectedDailyHoursChange: (String) -> Unit,
     onExpectedWeeklyHoursChange: (String) -> Unit,
     onWorkdayToggle: (DayOfWeek) -> Unit,
@@ -1196,6 +1256,12 @@ fun TimeClockScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
+        bottomBar = {
+            TimeClockBottomNavigation(
+                selectedTab = state.selectedTab,
+                onTabSelect = onTabSelect,
+            )
+        },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -1223,53 +1289,41 @@ fun TimeClockScreen(
                 )
             }
 
-            WorkProfileCard(
-                state = state,
+            ActiveWorkplaceDropdown(
+                profiles = state.workProfiles,
+                activeProfileId = state.activeProfileId,
                 onProfileSelect = onProfileSelect,
-                onProfileNameChange = onProfileNameChange,
-                onProfileStartDateChange = onProfileStartDateChange,
-                onNewProfileNameChange = onNewProfileNameChange,
-                onNewProfileStartDateChange = onNewProfileStartDateChange,
-                onProfileCreate = onProfileCreate,
             )
 
-            ClockActionButton(
-                isClockedIn = state.isClockedIn,
-                onClockIn = onClockIn,
-                onClockOut = onClockOut,
-            )
-
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-                modifier = Modifier.padding(vertical = 4.dp),
-            ) {
-                Text(
-                    text = if (state.isClockedIn) formatDuration(state.activeDuration) else "00:00:00",
-                    fontSize = 56.sp,
-                    lineHeight = 62.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = state.clockInTime?.let { "Clocked in at ${formatTime(it)}" }
-                        ?: "No active work session",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
-            }
-
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                DailySummaryCard(state = state)
-                WorkHoursSettingsCard(
+            when (state.selectedTab) {
+                AppTab.TODAY -> TodayTab(
                     state = state,
-                    onSettingsExpandedToggle = onSettingsExpandedToggle,
+                    onClockIn = onClockIn,
+                    onClockOut = onClockOut,
+                )
+                AppTab.HISTORY -> HistoryTab(
+                    state = state,
+                    onManualDateChange = onManualDateChange,
+                    onManualClockInChange = onManualClockInChange,
+                    onManualClockOutChange = onManualClockOutChange,
+                    onManualSessionSave = onManualSessionSave,
+                    onManualSessionCancel = onManualSessionCancel,
+                    onHistoryDayToggle = onHistoryDayToggle,
+                    onSessionEdit = onSessionEdit,
+                    onSessionDelete = onSessionDelete,
+                )
+                AppTab.INSIGHTS -> InsightsTab(
+                    state = state,
+                    onOvertimeRangeChange = onOvertimeRangeChange,
+                )
+                AppTab.SETTINGS -> SettingsTab(
+                    state = state,
+                    onProfileNameChange = onProfileNameChange,
+                    onProfileStartDateChange = onProfileStartDateChange,
+                    onNewProfileNameChange = onNewProfileNameChange,
+                    onNewProfileStartDateChange = onNewProfileStartDateChange,
+                    onProfileCreate = onProfileCreate,
+                    onProfileDelete = onProfileDelete,
                     onExpectedDailyHoursChange = onExpectedDailyHoursChange,
                     onExpectedWeeklyHoursChange = onExpectedWeeklyHoursChange,
                     onWorkdayToggle = onWorkdayToggle,
@@ -1278,26 +1332,198 @@ fun TimeClockScreen(
                     onOvertimeStartDateChange = onOvertimeStartDateChange,
                     onStartingOvertimeBalanceChange = onStartingOvertimeBalanceChange,
                 )
-                LastSessionCard(session = state.lastCompletedSession)
-                ManualEntryCard(
-                    state = state,
-                    onDateChange = onManualDateChange,
-                    onClockInChange = onManualClockInChange,
-                    onClockOutChange = onManualClockOutChange,
-                    onSave = onManualSessionSave,
-                    onCancel = onManualSessionCancel,
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimeClockBottomNavigation(
+    selectedTab: AppTab,
+    onTabSelect: (AppTab) -> Unit,
+) {
+    NavigationBar(containerColor = Color.White) {
+        AppTab.entries.forEach { tab ->
+            NavigationBarItem(
+                selected = tab == selectedTab,
+                onClick = { onTabSelect(tab) },
+                icon = {
+                    Icon(
+                        imageVector = tab.icon,
+                        contentDescription = tab.label,
+                    )
+                },
+                label = { Text(text = tab.label) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun TodayTab(
+    state: TimeClockUiState,
+    onClockIn: () -> Unit,
+    onClockOut: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        ClockActionButton(
+            isClockedIn = state.isClockedIn,
+            onClockIn = onClockIn,
+            onClockOut = onClockOut,
+        )
+        ActiveTimerBlock(state = state)
+        DailySummaryCard(state = state)
+        OvertimePreviewCard(state = state)
+        LastSessionCard(session = state.lastCompletedSession)
+    }
+}
+
+@Composable
+private fun HistoryTab(
+    state: TimeClockUiState,
+    onManualDateChange: (String) -> Unit,
+    onManualClockInChange: (String) -> Unit,
+    onManualClockOutChange: (String) -> Unit,
+    onManualSessionSave: () -> Unit,
+    onManualSessionCancel: () -> Unit,
+    onHistoryDayToggle: (LocalDate) -> Unit,
+    onSessionEdit: (WorkSession) -> Unit,
+    onSessionDelete: (WorkSession) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        ManualEntryCard(
+            state = state,
+            onDateChange = onManualDateChange,
+            onClockInChange = onManualClockInChange,
+            onClockOutChange = onManualClockOutChange,
+            onSave = onManualSessionSave,
+            onCancel = onManualSessionCancel,
+        )
+        HistoryCard(
+            state = state,
+            onHistoryDayToggle = onHistoryDayToggle,
+            onSessionEdit = onSessionEdit,
+            onSessionDelete = onSessionDelete,
+        )
+    }
+}
+
+@Composable
+private fun InsightsTab(
+    state: TimeClockUiState,
+    onOvertimeRangeChange: (OvertimeRange) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        ReportsCard(state = state)
+        ChartsCard(state = state)
+        OvertimeBalanceCard(
+            state = state,
+            onOvertimeRangeChange = onOvertimeRangeChange,
+        )
+    }
+}
+
+@Composable
+private fun SettingsTab(
+    state: TimeClockUiState,
+    onProfileNameChange: (String) -> Unit,
+    onProfileStartDateChange: (String) -> Unit,
+    onNewProfileNameChange: (String) -> Unit,
+    onNewProfileStartDateChange: (String) -> Unit,
+    onProfileCreate: () -> Unit,
+    onProfileDelete: () -> Unit,
+    onExpectedDailyHoursChange: (String) -> Unit,
+    onExpectedWeeklyHoursChange: (String) -> Unit,
+    onWorkdayToggle: (DayOfWeek) -> Unit,
+    onUnpaidLunchBreakToggle: (Boolean) -> Unit,
+    onLunchBreakMinutesChange: (String) -> Unit,
+    onOvertimeStartDateChange: (String) -> Unit,
+    onStartingOvertimeBalanceChange: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        WorkProfileCard(
+            state = state,
+            onProfileNameChange = onProfileNameChange,
+            onProfileStartDateChange = onProfileStartDateChange,
+            onNewProfileNameChange = onNewProfileNameChange,
+            onNewProfileStartDateChange = onNewProfileStartDateChange,
+            onProfileCreate = onProfileCreate,
+            onProfileDelete = onProfileDelete,
+        )
+        WorkHoursSettingsCard(
+            state = state,
+            onExpectedDailyHoursChange = onExpectedDailyHoursChange,
+            onExpectedWeeklyHoursChange = onExpectedWeeklyHoursChange,
+            onWorkdayToggle = onWorkdayToggle,
+            onUnpaidLunchBreakToggle = onUnpaidLunchBreakToggle,
+            onLunchBreakMinutesChange = onLunchBreakMinutesChange,
+            onOvertimeStartDateChange = onOvertimeStartDateChange,
+            onStartingOvertimeBalanceChange = onStartingOvertimeBalanceChange,
+        )
+    }
+}
+
+@Composable
+private fun ActiveWorkplaceDropdown(
+    profiles: List<WorkProfile>,
+    activeProfileId: String,
+    onProfileSelect: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val activeProfile = profiles.firstOrNull { it.id == activeProfileId } ?: profiles.first()
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Button(
+            onClick = { expanded = true },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = activeProfile.name,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
                 )
-                ReportsCard(state = state)
-                ChartsCard(state = state)
-                OvertimeBalanceCard(
-                    state = state,
-                    onOvertimeRangeChange = onOvertimeRangeChange,
+                Text(
+                    text = "Tracking since ${formatDateInput(activeProfile.trackingStartDate)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    textAlign = TextAlign.Center,
                 )
-                HistoryCard(
-                    state = state,
-                    onHistoryDayToggle = onHistoryDayToggle,
-                    onSessionEdit = onSessionEdit,
-                    onSessionDelete = onSessionDelete,
+            }
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            profiles.forEach { profile ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = profile.name,
+                            fontWeight = if (profile.id == activeProfileId) {
+                                FontWeight.SemiBold
+                            } else {
+                                FontWeight.Normal
+                            },
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onProfileSelect(profile.id)
+                    },
                 )
             }
         }
@@ -1305,14 +1531,81 @@ fun TimeClockScreen(
 }
 
 @Composable
+private fun ActiveTimerBlock(state: TimeClockUiState) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = Modifier.padding(vertical = 4.dp),
+    ) {
+        Text(
+            text = if (state.isClockedIn) formatDuration(state.activeDuration) else "00:00:00",
+            fontSize = 56.sp,
+            lineHeight = 62.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = state.clockInTime?.let { "Clocked in at ${formatTime(it)}" }
+                ?: "No active work session",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+private fun OvertimePreviewCard(state: TimeClockUiState) {
+    val balance = buildOvertimeBalance(state)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F4FF)),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Overtime",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = balance.range.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = formatSignedBalance(balance.totalBalance),
+                style = MaterialTheme.typography.titleLarge,
+                color = if (balance.totalBalance.isNegative) {
+                    Color(0xFFB42318)
+                } else {
+                    Color(0xFF0F766E)
+                },
+                fontWeight = FontWeight.Bold,
+            )
+        }
+    }
+}
+
+@Composable
 private fun WorkProfileCard(
     state: TimeClockUiState,
-    onProfileSelect: (String) -> Unit,
     onProfileNameChange: (String) -> Unit,
     onProfileStartDateChange: (String) -> Unit,
     onNewProfileNameChange: (String) -> Unit,
     onNewProfileStartDateChange: (String) -> Unit,
     onProfileCreate: () -> Unit,
+    onProfileDelete: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1326,11 +1619,6 @@ private fun WorkProfileCard(
                 text = "Work profile",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
-            )
-            WorkProfileSelector(
-                profiles = state.workProfiles,
-                activeProfileId = state.activeProfileId,
-                onProfileSelect = onProfileSelect,
             )
             OutlinedTextField(
                 value = state.activeProfileNameInput,
@@ -1348,6 +1636,17 @@ private fun WorkProfileCard(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = onProfileDelete) {
+                    Text(
+                        text = "Delete workplace",
+                        color = Color(0xFFB42318),
+                    )
+                }
+            }
             state.profileError?.let { error ->
                 Text(
                     text = error,
@@ -1384,40 +1683,6 @@ private fun WorkProfileCard(
                     Button(onClick = onProfileCreate) {
                         Text(text = "Add workplace")
                     }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun WorkProfileSelector(
-    profiles: List<WorkProfile>,
-    activeProfileId: String,
-    onProfileSelect: (String) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        profiles.chunked(2).forEach { rowProfiles ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                rowProfiles.forEach { profile ->
-                    FilterChip(
-                        selected = profile.id == activeProfileId,
-                        onClick = { onProfileSelect(profile.id) },
-                        label = {
-                            Text(
-                                text = profile.name,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-                repeat(2 - rowProfiles.size) {
-                    Spacer(modifier = Modifier.weight(1f))
                 }
             }
         }
@@ -1513,7 +1778,6 @@ private fun DailySummaryCard(state: TimeClockUiState) {
 @Composable
 private fun WorkHoursSettingsCard(
     state: TimeClockUiState,
-    onSettingsExpandedToggle: () -> Unit,
     onExpectedDailyHoursChange: (String) -> Unit,
     onExpectedWeeklyHoursChange: (String) -> Unit,
     onWorkdayToggle: (DayOfWeek) -> Unit,
@@ -1532,38 +1796,14 @@ private fun WorkHoursSettingsCard(
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column {
-                    Text(
-                        text = "Settings",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text = "Work hours and breaks",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                IconButton(onClick = onSettingsExpandedToggle) {
-                    Icon(
-                        imageVector = if (state.isSettingsExpanded) {
-                            Icons.Default.ExpandLess
-                        } else {
-                            Icons.Default.ExpandMore
-                        },
-                        contentDescription = if (state.isSettingsExpanded) {
-                            "Collapse settings"
-                        } else {
-                            "Expand settings"
-                        },
-                    )
-                }
+                Text(
+                    text = "Work hours and breaks",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
             }
-
-            if (!state.isSettingsExpanded) return@Column
 
             OutlinedTextField(
                 value = state.expectedDailyHoursInput,
@@ -2919,7 +3159,6 @@ private fun ClockedOutPreview() {
                 todayLastClockOut = Instant.now().minus(Duration.ofMinutes(20)),
                 todayProgressMessage = "You need 1h 5m more today",
                 todayBalanceDuration = Duration.ofMinutes(-65),
-                isSettingsExpanded = true,
                 deductUnpaidLunchBreak = true,
                 todayCreditedDuration = Duration.ofHours(5).plusMinutes(55),
                 todayBreakDeduction = Duration.ofMinutes(30),
@@ -2939,6 +3178,7 @@ private fun ClockedOutPreview() {
                 ),
                 expandedHistoryDates = setOf(LocalDate.now()),
             ),
+            onTabSelect = {},
             onClockIn = {},
             onClockOut = {},
             onProfileSelect = {},
@@ -2947,6 +3187,7 @@ private fun ClockedOutPreview() {
             onNewProfileNameChange = {},
             onNewProfileStartDateChange = {},
             onProfileCreate = {},
+            onProfileDelete = {},
             onHistoryDayToggle = {},
             onManualDateChange = {},
             onManualClockInChange = {},
@@ -2955,7 +3196,6 @@ private fun ClockedOutPreview() {
             onManualSessionCancel = {},
             onSessionEdit = {},
             onSessionDelete = {},
-            onSettingsExpandedToggle = {},
             onExpectedDailyHoursChange = {},
             onExpectedWeeklyHoursChange = {},
             onWorkdayToggle = {},
@@ -2994,6 +3234,7 @@ private fun ClockedInPreview() {
                     ),
                 ),
             ),
+            onTabSelect = {},
             onClockIn = {},
             onClockOut = {},
             onProfileSelect = {},
@@ -3002,6 +3243,7 @@ private fun ClockedInPreview() {
             onNewProfileNameChange = {},
             onNewProfileStartDateChange = {},
             onProfileCreate = {},
+            onProfileDelete = {},
             onHistoryDayToggle = {},
             onManualDateChange = {},
             onManualClockInChange = {},
@@ -3010,7 +3252,6 @@ private fun ClockedInPreview() {
             onManualSessionCancel = {},
             onSessionEdit = {},
             onSessionDelete = {},
-            onSettingsExpandedToggle = {},
             onExpectedDailyHoursChange = {},
             onExpectedWeeklyHoursChange = {},
             onWorkdayToggle = {},

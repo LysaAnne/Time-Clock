@@ -335,6 +335,7 @@ Implemented:
 - Edit the active workplace tracking start date
 - Create additional work profiles
 - Switch between work profiles
+- Delete work profiles while keeping at least one workplace
 - Profile-specific active clock-in state
 - Profile-specific completed sessions
 - Profile-specific expected daily hours
@@ -366,7 +367,7 @@ Not needed in the first version:
 
 Keep all functionality, but make the app feel calmer and easier to use.
 
-Status: **Planned**
+Status: **Built in version 1.1.0**
 
 Goal:
 
@@ -394,7 +395,7 @@ Consider:
 - Hide profile editing behind the Settings tab
 - Show a compact overtime preview on Today instead of the full overtime card
 - Keep full overtime range controls under Insights
-- Keep advanced settings collapsed or grouped clearly
+- Keep settings grouped clearly inside the Settings tab
 - Avoid putting every card on one scrolling screen
 - Make manual entry available from History instead of always showing it on Today
 - Keep button labels short and predictable
@@ -414,6 +415,19 @@ Recommended first version:
 - Move Reports, Charts, and Overtime Balance into Insights
 - Move Work Profiles and Work Hours Settings into Settings
 
+Implemented:
+
+- Bottom navigation with Today, History, Insights, and Settings tabs
+- Active workplace dropdown shown at the top on every tab
+- Today tab focused on active workplace, clock in / clock out, timer, today summary, overtime preview, and last session
+- History tab for manual entry and completed session history
+- Insights tab for reports, charts, and full overtime balance controls
+- Settings tab for work profiles and work-hour settings
+- Compact work profile display on Today
+- Compact overtime preview on Today
+- Work-hour settings are always visible inside Settings instead of hidden behind a second collapse control
+- All existing functionality kept, but split into clearer areas
+
 ### 12. Reminders and Notifications
 
 Help the user remember to clock in or out.
@@ -426,7 +440,48 @@ Consider:
 - Location-based reminder when arriving at or leaving work
 - Notification showing active session duration
 
-### 13. Location Features
+### 13. Home Screen Widgets
+
+Let the user see and control work time without opening the full app.
+
+Status: **Planned**
+
+Goal:
+
+- Make clocking in and out faster from the Android home screen
+- Show the most important work-time status at a glance
+- Support the active work profile, so the widget matches the workplace currently being tracked
+
+Consider:
+
+- Clock in / clock out widget with one large action button
+- Daily progress bar showing how much of today's expected time is completed
+- Remaining-time text, such as `2h 15m left today`
+- Overtime balance widget showing the selected balance range
+- Compact balance widget showing only `+2h 10m` or `-45m`
+- Active-session widget showing live clocked-in duration
+- Workplace label on every widget so the user knows which profile it controls
+- Widget tap opens the relevant app tab, such as Today or Insights
+- Widget refresh after clocking in, clocking out, editing sessions, or switching work profiles
+- Different widget sizes, such as small, medium, and wide
+- Clear disabled/error state if no work profile exists
+
+Recommended first version:
+
+- A medium Today widget with active workplace, clock in / clock out button, progress bar, and time left today
+- A small Balance widget with active workplace and overtime balance
+- Tapping the Today widget opens the Today tab
+- Tapping the Balance widget opens the Insights tab
+
+Nice later widget ideas:
+
+- Weekly progress widget
+- Last session widget
+- Quick manual-entry shortcut widget
+- Multi-workplace widget showing balances for several profiles
+- Lock-screen or glance-style status if supported by the Android version
+
+### 14. Location Features
 
 Optional, but useful for work tracking.
 
@@ -438,7 +493,7 @@ Consider:
 - Automatic prompts based on location
 - Privacy-friendly setting to disable location entirely
 
-### 14. Export
+### 15. Export
 
 Allow the user to take their data elsewhere.
 
@@ -450,7 +505,7 @@ Consider:
 - Share report by email
 - Include notes and edited entries
 
-### 15. Backup and Sync
+### 16. Backup and Sync
 
 Protect the data if the phone is lost.
 
@@ -463,7 +518,7 @@ Consider:
 - Multi-device support
 - Restore from backup
 
-### 16. Calendar Integration
+### 17. Calendar Integration
 
 Optional integration with the user's schedule.
 
@@ -474,7 +529,7 @@ Consider:
 - Add work sessions to calendar
 - Show holidays and days off
 
-### 17. Vacation, Sick Days, and Absence
+### 18. Vacation, Sick Days, and Absence
 
 Useful if the app becomes a complete work-time tracker.
 
@@ -486,7 +541,7 @@ Consider:
 - Mark days as not expected work days
 - Adjust expected hours automatically
 
-### 18. Data Privacy
+### 19. Data Privacy
 
 Important because work-time data is personal.
 
@@ -498,14 +553,13 @@ Consider:
 - Optional app lock
 - Avoid unnecessary tracking
 
-### 19. Polish and Convenience
+### 20. Polish and Convenience
 
 Small features that make the app feel good to use.
 
 Consider:
 
 - Dark mode
-- Home screen widget
 - Quick settings tile
 - Wear OS support later
 - Nice empty states
@@ -529,8 +583,9 @@ Build the app in this order:
 11. Add work profiles
 12. Simplify the UI with tabs
 13. Add reminders
-14. Add export
-15. Add backup
+14. Add home screen widgets
+15. Add export
+16. Add backup
 
 ## First Feature To Build
 
