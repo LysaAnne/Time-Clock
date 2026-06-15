@@ -78,11 +78,16 @@ Features 1-5 and 7-17 are implemented. Feature 6 was intentionally skipped, and 
 - Change the active clock-in time while the timer is still running
 - Correct the latest clock-out time directly from Today after clocking out
 - Use -5m/+5m quick corrections from the clock-in widget
+- Enable Android Auto Backup for saved workplaces, sessions, settings, absences, and widget selections
 
 Expected time inputs accept formats like `7:30`, `7h30m`, `7 30`, `450m`, or decimal hours like `7.5`.
 Starting overtime balance accepts formats like `2:30` or `-1:15` and is applied to the all-time overtime balance.
 Manual sessions and quick time corrections use date format `YYYY-MM-DD` and time format `HH:mm`.
 Pay inputs accept plain amounts like `45000`, `650`, or `650.50`.
+
+## Data Backup
+
+Android Auto Backup is enabled for the app's local time-clock data. This can restore data after reinstalling or moving to a new phone when Android backup is enabled for the device and Google account. Android controls when backups happen, so this is helpful protection but not the same as guaranteed real-time cloud sync.
 
 ## How To Open
 
