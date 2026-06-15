@@ -2,10 +2,12 @@ package com.annelysa.timeclock
 
 import android.Manifest
 import android.app.Application
+import android.app.DatePickerDialog
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.TimePickerDialog
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -48,6 +50,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.History
@@ -60,6 +63,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -75,9 +79,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -123,6 +129,9 @@ class MainActivity : ComponentActivity() {
                     onActiveClockInSave = viewModel::saveActiveClockInTime,
                     onRecentClockOutChange = viewModel::updateRecentClockOutEditInput,
                     onRecentClockOutSave = viewModel::saveRecentClockOutTime,
+                    onTodayOvertimeRangeChange = viewModel::updateTodayOvertimeRange,
+                    onTodayOvertimeStartDateChange = viewModel::updateTodayOvertimeStartDate,
+                    onTodayOvertimeEndDateChange = viewModel::updateTodayOvertimeEndDate,
                     onInsightsSectionSelect = viewModel::selectInsightsSection,
                     onExportExpandToggle = viewModel::toggleExportExpanded,
                     onProfileSelect = viewModel::selectProfile,
@@ -136,6 +145,8 @@ class MainActivity : ComponentActivity() {
                     onNewProfileStartDateChange = viewModel::updateNewProfileStartDate,
                     onProfileCreate = viewModel::createProfile,
                     onProfileDelete = viewModel::deleteActiveProfile,
+                    onProfileStopTracking = viewModel::stopTrackingActiveProfile,
+                    onProfileReactivate = viewModel::reactivateActiveProfile,
                     onHistoryDayToggle = viewModel::toggleHistoryDay,
                     onManualDateChange = viewModel::updateManualDate,
                     onManualClockInChange = viewModel::updateManualClockIn,
@@ -344,6 +355,10 @@ data class TimeClockUiState(
     val lastCompletedSession: WorkSession? = null,
     val completedSessions: List<WorkSession> = emptyList(),
     val expandedHistoryDates: Set<LocalDate> = emptySet(),
+    val selectedTodayOvertimeRange: TodayOvertimeRange = TodayOvertimeRange.ONE_WEEK,
+    val todayOvertimeStartDateInput: String = formatDateInput(LocalDate.now().minusWeeks(1).plusDays(1)),
+    val todayOvertimeEndDateInput: String = formatDateInput(LocalDate.now()),
+    val todayOvertimeRangeError: String? = null,
     val manualDateInput: String = formatDateInput(LocalDate.now()),
     val manualClockInInput: String = "",
     val manualClockOutInput: String = "",
@@ -379,6 +394,7 @@ data class WorkProfile(
     val id: String,
     val name: String,
     val trackingStartDate: LocalDate,
+    val trackingEndDate: LocalDate? = null,
 )
 
 data class WorkSession(
@@ -476,6 +492,18 @@ data class OvertimeBalance(
     val totalBalance: Duration = startingBalance.plus(periodBalance)
 }
 
+data class TodayOvertimeBalance(
+    val label: String,
+    val startDate: LocalDate,
+    val endDate: LocalDate,
+    val actualDuration: Duration,
+    val expectedDuration: Duration,
+    val startingBalance: Duration,
+) {
+    val periodBalance: Duration = actualDuration.minus(expectedDuration)
+    val totalBalance: Duration = startingBalance.plus(periodBalance)
+}
+
 enum class OvertimeRange(val label: String) {
     TODAY("Today"),
     ONE_WEEK("1 week"),
@@ -484,6 +512,14 @@ enum class OvertimeRange(val label: String) {
     SIX_MONTHS("6 months"),
     TWELVE_MONTHS("12 months"),
     ALL_TIME("All time"),
+}
+
+enum class TodayOvertimeRange(val label: String) {
+    ONE_WEEK("1 week"),
+    FOUR_WEEKS("4 weeks"),
+    SIX_MONTHS("6 months"),
+    TWELVE_MONTHS("1 year"),
+    CUSTOM("Custom"),
 }
 
 enum class WorkplaceType(
@@ -584,6 +620,41 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun toggleExportExpanded() {
         _uiState.value = _uiState.value.copy(isExportExpanded = !_uiState.value.isExportExpanded)
+    }
+
+    fun updateTodayOvertimeRange(range: TodayOvertimeRange) {
+        _uiState.value = _uiState.value.copy(
+            selectedTodayOvertimeRange = range,
+            todayOvertimeRangeError = todayOvertimeRangeError(
+                range = range,
+                startInput = _uiState.value.todayOvertimeStartDateInput,
+                endInput = _uiState.value.todayOvertimeEndDateInput,
+            ),
+        )
+    }
+
+    fun updateTodayOvertimeStartDate(input: String) {
+        val sanitizedInput = input.take(10)
+        _uiState.value = _uiState.value.copy(
+            todayOvertimeStartDateInput = sanitizedInput,
+            todayOvertimeRangeError = todayOvertimeRangeError(
+                range = _uiState.value.selectedTodayOvertimeRange,
+                startInput = sanitizedInput,
+                endInput = _uiState.value.todayOvertimeEndDateInput,
+            ),
+        )
+    }
+
+    fun updateTodayOvertimeEndDate(input: String) {
+        val sanitizedInput = input.take(10)
+        _uiState.value = _uiState.value.copy(
+            todayOvertimeEndDateInput = sanitizedInput,
+            todayOvertimeRangeError = todayOvertimeRangeError(
+                range = _uiState.value.selectedTodayOvertimeRange,
+                startInput = _uiState.value.todayOvertimeStartDateInput,
+                endInput = sanitizedInput,
+            ),
+        )
     }
 
     fun refreshFromStorage() {
@@ -831,8 +902,71 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         rescheduleClockInReminder(nextProfileState)
     }
 
+    fun stopTrackingActiveProfile(endDate: LocalDate) {
+        val state = _uiState.value
+        if (endDate.isBefore(state.activeProfile.trackingStartDate)) {
+            _uiState.value = state.copy(profileError = "End date cannot be before the workplace start date.")
+            return
+        }
+        val updatedProfile = state.activeProfile.copy(trackingEndDate = endDate)
+        val updatedProfiles = state.workProfiles.replaceProfile(updatedProfile)
+        val activeClockIn = state.clockInTime
+        val now = Instant.now()
+        val completedSessions = if (activeClockIn != null && now.isAfter(activeClockIn)) {
+            (state.completedSessions + WorkSession(activeClockIn, now)).sortedBy { it.clockIn }
+        } else {
+            state.completedSessions
+        }
+
+        saveProfiles(updatedProfiles)
+        saveCompletedSessions(completedSessions)
+        preferences.edit()
+            .remove(profileKey(KEY_ACTIVE_CLOCK_IN))
+            .remove(profileKey(KEY_CLOCK_OUT_REMINDER_SENT_MASK))
+            .remove(KEY_ACTIVE_CLOCK_IN)
+            .apply()
+        activeClockIn?.let {
+            cancelLongSessionReminders(
+                context = getApplication<Application>(),
+                profileId = state.activeProfileId,
+                clockInMillis = it.toEpochMilli(),
+            )
+        }
+
+        _uiState.value = withDailySummary(
+            state.copy(
+                workProfiles = updatedProfiles,
+                activeProfileStartDateInput = formatDateInput(updatedProfile.trackingStartDate),
+                isClockedIn = false,
+                clockInTime = null,
+                activeDuration = Duration.ZERO,
+                activeClockInEditInput = "",
+                activeClockInEditError = null,
+                completedSessions = completedSessions,
+                lastCompletedSession = completedSessions.maxByOrNull { it.clockOut },
+                profileError = null,
+            ),
+        )
+        refreshHomeScreenWidgets()
+    }
+
+    fun reactivateActiveProfile() {
+        val state = _uiState.value
+        val updatedProfile = state.activeProfile.copy(trackingEndDate = null)
+        val updatedProfiles = state.workProfiles.replaceProfile(updatedProfile)
+
+        saveProfiles(updatedProfiles)
+        _uiState.value = withDailySummary(
+            state.copy(
+                workProfiles = updatedProfiles,
+                profileError = null,
+            ),
+        )
+        refreshHomeScreenWidgets()
+    }
+
     fun clockIn() {
-        if (_uiState.value.isClockedIn) return
+        if (_uiState.value.isClockedIn || _uiState.value.activeProfile.trackingEndDate != null) return
 
         val now = Instant.now()
         preferences.edit()
@@ -898,13 +1032,13 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         )
     }
 
-    fun saveActiveClockInTime() {
+    fun saveActiveClockInTime(): Boolean {
         val state = _uiState.value
-        val currentClockIn = state.clockInTime ?: return
+        val currentClockIn = state.clockInTime ?: return false
         val clockInTime = parseTimeInput(state.activeClockInEditInput)
         if (clockInTime == null) {
             _uiState.value = state.copy(activeClockInEditError = "Use a time like 09:00.")
-            return
+            return false
         }
 
         val zoneId = ZoneId.systemDefault()
@@ -912,7 +1046,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         val now = Instant.now()
         if (!newClockIn.isBefore(now)) {
             _uiState.value = state.copy(activeClockInEditError = "Clock in must be before now.")
-            return
+            return false
         }
 
         preferences.edit()
@@ -937,6 +1071,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.value = updatedState
         rescheduleLongSessionReminders(updatedState)
         refreshHomeScreenWidgets()
+        return true
     }
 
     fun updateRecentClockOutEditInput(input: String) {
@@ -946,13 +1081,13 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         )
     }
 
-    fun saveRecentClockOutTime() {
+    fun saveRecentClockOutTime(): Boolean {
         val state = _uiState.value
-        val session = state.lastCompletedSession ?: return
+        val session = state.lastCompletedSession ?: return false
         val clockOutTime = parseTimeInput(state.recentClockOutEditInput)
         if (clockOutTime == null) {
             _uiState.value = state.copy(recentClockOutEditError = "Use a time like 17:00.")
-            return
+            return false
         }
 
         val zoneId = ZoneId.systemDefault()
@@ -960,11 +1095,11 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         val newClockOut = clockOutDate.atTime(clockOutTime).atZone(zoneId).toInstant()
         if (!newClockOut.isAfter(session.clockIn)) {
             _uiState.value = state.copy(recentClockOutEditError = "Clock out must be after clock in.")
-            return
+            return false
         }
         if (newClockOut.isAfter(Instant.now())) {
             _uiState.value = state.copy(recentClockOutEditError = "Clock out cannot be in the future.")
-            return
+            return false
         }
 
         val updatedSession = session.copy(clockOut = newClockOut)
@@ -986,6 +1121,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             ),
         )
         refreshHomeScreenWidgets()
+        return true
     }
 
     fun updateManualDate(input: String) {
@@ -1678,7 +1814,9 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             Duration.ZERO
         }
         val todayCreditedDuration = todayTotalDuration
-        val isTodayWorkday = LocalDate.now(zoneId).dayOfWeek in state.workDays &&
+        val isAfterWorkplaceEnd = state.activeProfile.trackingEndDate?.let { today.isAfter(it) } == true
+        val isTodayWorkday = !isAfterWorkplaceEnd &&
+            LocalDate.now(zoneId).dayOfWeek in state.workDays &&
             todayAbsence?.type?.coversExpectedHours != true
         val expectedTodayDuration = if (isTodayWorkday) {
             state.expectedDailyDuration.plus(todayBreakDeduction)
@@ -2115,7 +2253,12 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun encodeProfiles(profiles: List<WorkProfile>): String {
         return profiles.joinToString(separator = "\n") { profile ->
-            "${profile.id}|${sanitizeProfileName(profile.name).ifBlank { DEFAULT_WORK_PROFILE_NAME }}|${formatDateInput(profile.trackingStartDate)}"
+            listOf(
+                profile.id,
+                sanitizeProfileName(profile.name).ifBlank { DEFAULT_WORK_PROFILE_NAME },
+                formatDateInput(profile.trackingStartDate),
+                profile.trackingEndDate?.let(::formatDateInput).orEmpty(),
+            ).joinToString(separator = "|")
         }
     }
 
@@ -2128,11 +2271,15 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 val trackingStartDate = parts.getOrNull(2)
                     ?.let { value -> runCatching { LocalDate.parse(value) }.getOrNull() }
                     ?: LocalDate.now()
+                val trackingEndDate = parts.getOrNull(3)
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { value -> runCatching { LocalDate.parse(value) }.getOrNull() }
 
                 WorkProfile(
                     id = id,
                     name = name,
                     trackingStartDate = trackingStartDate,
+                    trackingEndDate = trackingEndDate,
                 )
             }
             .toList()
@@ -2265,9 +2412,12 @@ fun TimeClockScreen(
     onClockIn: () -> Unit,
     onClockOut: () -> Unit,
     onActiveClockInChange: (String) -> Unit,
-    onActiveClockInSave: () -> Unit,
+    onActiveClockInSave: () -> Boolean,
     onRecentClockOutChange: (String) -> Unit,
-    onRecentClockOutSave: () -> Unit,
+    onRecentClockOutSave: () -> Boolean,
+    onTodayOvertimeRangeChange: (TodayOvertimeRange) -> Unit,
+    onTodayOvertimeStartDateChange: (String) -> Unit,
+    onTodayOvertimeEndDateChange: (String) -> Unit,
     onInsightsSectionSelect: (InsightsSection) -> Unit,
     onExportExpandToggle: () -> Unit,
     onProfileSelect: (String) -> Unit,
@@ -2281,6 +2431,8 @@ fun TimeClockScreen(
     onNewProfileStartDateChange: (String) -> Unit,
     onProfileCreate: () -> Unit,
     onProfileDelete: () -> Unit,
+    onProfileStopTracking: (LocalDate) -> Unit,
+    onProfileReactivate: () -> Unit,
     onHistoryDayToggle: (LocalDate) -> Unit,
     onManualDateChange: (String) -> Unit,
     onManualClockInChange: (String) -> Unit,
@@ -2320,7 +2472,7 @@ fun TimeClockScreen(
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color(0xFFF3F4F6),
         bottomBar = {
             TimeClockBottomNavigation(
                 selectedTab = state.selectedTab,
@@ -2332,9 +2484,9 @@ fun TimeClockScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(24.dp)
+                .padding(20.dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(28.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Column(
@@ -2346,11 +2498,6 @@ fun TimeClockScreen(
                     style = MaterialTheme.typography.headlineLarge,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onBackground,
-                )
-                Text(
-                    text = if (state.isClockedIn) "You are currently clocked in" else "Ready for your next shift",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
@@ -2369,6 +2516,9 @@ fun TimeClockScreen(
                     onActiveClockInSave = onActiveClockInSave,
                     onRecentClockOutChange = onRecentClockOutChange,
                     onRecentClockOutSave = onRecentClockOutSave,
+                    onTodayOvertimeRangeChange = onTodayOvertimeRangeChange,
+                    onTodayOvertimeStartDateChange = onTodayOvertimeStartDateChange,
+                    onTodayOvertimeEndDateChange = onTodayOvertimeEndDateChange,
                 )
                 AppTab.HISTORY -> HistoryTab(
                     state = state,
@@ -2415,6 +2565,8 @@ fun TimeClockScreen(
                     onNewProfileStartDateChange = onNewProfileStartDateChange,
                     onProfileCreate = onProfileCreate,
                     onProfileDelete = onProfileDelete,
+                    onProfileStopTracking = onProfileStopTracking,
+                    onProfileReactivate = onProfileReactivate,
                     onExpectedDailyHoursChange = onExpectedDailyHoursChange,
                     onExpectedWeeklyHoursChange = onExpectedWeeklyHoursChange,
                     onWorkdayToggle = onWorkdayToggle,
@@ -2459,9 +2611,12 @@ private fun TodayTab(
     onClockIn: () -> Unit,
     onClockOut: () -> Unit,
     onActiveClockInChange: (String) -> Unit,
-    onActiveClockInSave: () -> Unit,
+    onActiveClockInSave: () -> Boolean,
     onRecentClockOutChange: (String) -> Unit,
-    onRecentClockOutSave: () -> Unit,
+    onRecentClockOutSave: () -> Boolean,
+    onTodayOvertimeRangeChange: (TodayOvertimeRange) -> Unit,
+    onTodayOvertimeStartDateChange: (String) -> Unit,
+    onTodayOvertimeEndDateChange: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -2470,6 +2625,7 @@ private fun TodayTab(
     ) {
         ClockActionButton(
             isClockedIn = state.isClockedIn,
+            isTrackingEnded = state.activeProfile.trackingEndDate != null,
             onClockIn = onClockIn,
             onClockOut = onClockOut,
         )
@@ -2482,7 +2638,12 @@ private fun TodayTab(
             onRecentClockOutSave = onRecentClockOutSave,
         )
         DailySummaryCard(state = state)
-        OvertimePreviewCard(state = state)
+        OvertimePreviewCard(
+            state = state,
+            onRangeChange = onTodayOvertimeRangeChange,
+            onStartDateChange = onTodayOvertimeStartDateChange,
+            onEndDateChange = onTodayOvertimeEndDateChange,
+        )
     }
 }
 
@@ -2626,6 +2787,8 @@ private fun SettingsTab(
     onNewProfileStartDateChange: (String) -> Unit,
     onProfileCreate: () -> Unit,
     onProfileDelete: () -> Unit,
+    onProfileStopTracking: (LocalDate) -> Unit,
+    onProfileReactivate: () -> Unit,
     onExpectedDailyHoursChange: (String) -> Unit,
     onExpectedWeeklyHoursChange: (String) -> Unit,
     onWorkdayToggle: (DayOfWeek) -> Unit,
@@ -2653,6 +2816,8 @@ private fun SettingsTab(
             onNewProfileStartDateChange = onNewProfileStartDateChange,
             onProfileCreate = onProfileCreate,
             onProfileDelete = onProfileDelete,
+            onProfileStopTracking = onProfileStopTracking,
+            onProfileReactivate = onProfileReactivate,
         )
         WorkHoursSettingsCard(
             state = state,
@@ -2683,20 +2848,29 @@ private fun ActiveWorkplaceDropdown(
     val activeProfile = profiles.firstOrNull { it.id == activeProfileId } ?: profiles.first()
 
     Box(modifier = Modifier.fillMaxWidth()) {
-        Button(
+        OutlinedButton(
             onClick = { expanded = true },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp),
+            shape = RoundedCornerShape(4.dp),
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = Color.White,
+                contentColor = Color(0xFF111827),
+            ),
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
                     text = activeProfile.name,
+                    modifier = Modifier.weight(1f),
                     fontWeight = FontWeight.SemiBold,
-                    textAlign = TextAlign.Center,
-                )
-                Text(
-                    text = "Tracking since ${formatDateInput(activeProfile.trackingStartDate)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Start,
                 )
             }
         }
@@ -2728,28 +2902,109 @@ private fun ActiveWorkplaceDropdown(
 }
 
 @Composable
+private fun DatePickerTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        label = { Text(label) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+        trailingIcon = {
+            TextButton(
+                onClick = {
+                    val initialDate = runCatching { LocalDate.parse(value) }.getOrNull() ?: LocalDate.now()
+                    DatePickerDialog(
+                        context,
+                        { _, year, month, day ->
+                            onValueChange(formatDateInput(LocalDate.of(year, month + 1, day)))
+                        },
+                        initialDate.year,
+                        initialDate.monthValue - 1,
+                        initialDate.dayOfMonth,
+                    ).show()
+                },
+            ) {
+                Text(text = "Pick")
+            }
+        },
+    )
+}
+
+@Composable
+private fun TimePickerTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        label = { Text(label) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+        trailingIcon = {
+            TextButton(
+                onClick = {
+                    val initialTime = runCatching { LocalTime.parse(value, TIME_INPUT_FORMATTER) }.getOrNull()
+                        ?: LocalTime.now()
+                    TimePickerDialog(
+                        context,
+                        { _, hour, minute ->
+                            onValueChange(TIME_INPUT_FORMATTER.format(LocalTime.of(hour, minute)))
+                        },
+                        initialTime.hour,
+                        initialTime.minute,
+                        true,
+                    ).show()
+                },
+            ) {
+                Text(text = "Pick")
+            }
+        },
+    )
+}
+
+@Composable
 private fun ActiveTimerBlock(state: TimeClockUiState) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-        modifier = Modifier.padding(vertical = 4.dp),
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF111827)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
     ) {
-        Text(
-            text = if (state.isClockedIn) formatDuration(state.activeDuration) else "00:00:00",
-            fontSize = 56.sp,
-            lineHeight = 62.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = state.clockInTime?.let { "Clocked in at ${formatTime(it)}" }
-                ?: "No active work session",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 22.dp),
+        ) {
+            Text(
+                text = if (state.isClockedIn) formatDuration(state.activeDuration) else "00:00:00",
+                fontSize = 62.sp,
+                lineHeight = 66.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = state.clockInTime?.let { "Clocked in at ${formatTime(it)}" }
+                    ?: "No active work session",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color(0xFFD1D5DB),
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 
@@ -2757,127 +3012,216 @@ private fun ActiveTimerBlock(state: TimeClockUiState) {
 private fun QuickTimeCorrectionCard(
     state: TimeClockUiState,
     onActiveClockInChange: (String) -> Unit,
-    onActiveClockInSave: () -> Unit,
+    onActiveClockInSave: () -> Boolean,
     onRecentClockOutChange: (String) -> Unit,
-    onRecentClockOutSave: () -> Unit,
+    onRecentClockOutSave: () -> Boolean,
 ) {
     if (!state.isClockedIn && state.lastCompletedSession == null) return
+    var showDialog by remember { mutableStateOf(false) }
+    val isCorrectingClockIn = state.isClockedIn
+    val buttonLabel = if (isCorrectingClockIn) "Correct clock-in" else "Correct clock-out"
+    val dialogTitle = if (isCorrectingClockIn) "Correct clock-in time" else "Correct clock-out time"
+    val fieldValue = if (isCorrectingClockIn) state.activeClockInEditInput else state.recentClockOutEditInput
+    val fieldLabel = if (isCorrectingClockIn) "Clock in" else "Clock out"
+    val error = if (isCorrectingClockIn) state.activeClockInEditError else state.recentClockOutEditError
+    val onValueChange = if (isCorrectingClockIn) onActiveClockInChange else onRecentClockOutChange
+    val onSave = if (isCorrectingClockIn) onActiveClockInSave else onRecentClockOutSave
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        TextButton(onClick = { showDialog = true }) {
+            Text(text = buttonLabel)
+        }
+    }
+
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = { Text(text = dialogTitle) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = if (isCorrectingClockIn) {
+                            "Use this if you forgot to clock in at the real start time."
+                        } else {
+                            "Use this if the latest clock-out time was wrong."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TimePickerTextField(
+                        value = fieldValue,
+                        onValueChange = onValueChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = fieldLabel,
+                    )
+                    error?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFFB42318),
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (onSave()) {
+                            showDialog = false
+                        }
+                    },
+                ) {
+                    Text(text = "Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDialog = false }) {
+                    Text(text = "Close")
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun OvertimePreviewCard(
+    state: TimeClockUiState,
+    onRangeChange: (TodayOvertimeRange) -> Unit,
+    onStartDateChange: (String) -> Unit,
+    onEndDateChange: (String) -> Unit,
+) {
+    val balance = buildTodayOvertimeBalance(state)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(
-                text = "Quick correction",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Overtime",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = balance.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    text = formatSignedBalance(balance.totalBalance),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = if (balance.totalBalance.isNegative) {
+                        Color(0xFFB42318)
+                    } else {
+                        Color(0xFF0F766E)
+                    },
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            TodayOvertimeDropdown(
+                ranges = TODAY_OVERTIME_RANGES,
+                selectedRange = state.selectedTodayOvertimeRange,
+                onRangeChange = onRangeChange,
             )
-            if (state.isClockedIn) {
-                Text(
-                    text = "Change the start time for this active session.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            if (state.selectedTodayOvertimeRange == TodayOvertimeRange.CUSTOM) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    OutlinedTextField(
-                        value = state.activeClockInEditInput,
-                        onValueChange = onActiveClockInChange,
+                    DatePickerTextField(
+                        value = state.todayOvertimeStartDateInput,
+                        onValueChange = onStartDateChange,
                         modifier = Modifier.weight(1f),
-                        label = { Text("Clock in") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                        label = "From",
                     )
-                    Button(onClick = onActiveClockInSave) {
-                        Text(text = "Save")
-                    }
-                }
-                state.activeClockInEditError?.let { error ->
-                    Text(
-                        text = error,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFFB42318),
+                    DatePickerTextField(
+                        value = state.todayOvertimeEndDateInput,
+                        onValueChange = onEndDateChange,
+                        modifier = Modifier.weight(1f),
+                        label = "To",
                     )
                 }
-            } else {
+            }
+            state.todayOvertimeRangeError?.let { error ->
                 Text(
-                    text = "Adjust the clock-out time for the session you just finished.",
+                    text = error,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = Color(0xFFB42318),
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    OutlinedTextField(
-                        value = state.recentClockOutEditInput,
-                        onValueChange = onRecentClockOutChange,
-                        modifier = Modifier.weight(1f),
-                        label = { Text("Clock out") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                    )
-                    Button(onClick = onRecentClockOutSave) {
-                        Text(text = "Save")
-                    }
-                }
-                state.recentClockOutEditError?.let { error ->
-                    Text(
-                        text = error,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFFB42318),
-                    )
-                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                TimeStamp(label = "Actual", value = formatHoursAndMinutes(balance.actualDuration))
+                TimeStamp(label = "Expected", value = formatHoursAndMinutes(balance.expectedDuration))
+                TimeStamp(label = "Period", value = formatSignedBalance(balance.periodBalance))
             }
         }
     }
 }
 
 @Composable
-private fun OvertimePreviewCard(state: TimeClockUiState) {
-    val balance = buildOvertimeBalance(state)
+private fun TodayOvertimeDropdown(
+    ranges: List<TodayOvertimeRange>,
+    selectedRange: TodayOvertimeRange,
+    onRangeChange: (TodayOvertimeRange) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+    Box(modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(
+            onClick = { expanded = true },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(4.dp),
         ) {
-            Column(modifier = Modifier.weight(1f)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text = "Period")
                 Text(
-                    text = "Overtime",
-                    style = MaterialTheme.typography.titleMedium,
+                    text = selectedRange.label,
                     fontWeight = FontWeight.SemiBold,
                 )
-                Text(
-                    text = balance.range.label,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            }
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            ranges.forEach { range ->
+                DropdownMenuItem(
+                    text = {
+                    Text(
+                        text = range.label,
+                        fontWeight = if (range == selectedRange) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                    },
+                    onClick = {
+                        expanded = false
+                        onRangeChange(range)
+                    },
                 )
             }
-            Text(
-                text = formatSignedBalance(balance.totalBalance),
-                style = MaterialTheme.typography.titleLarge,
-                color = if (balance.totalBalance.isNegative) {
-                    Color(0xFFB42318)
-                } else {
-                    Color(0xFF0F766E)
-                },
-                fontWeight = FontWeight.Bold,
-            )
         }
     }
 }
@@ -2895,10 +3239,17 @@ private fun WorkProfileCard(
     onNewProfileStartDateChange: (String) -> Unit,
     onProfileCreate: () -> Unit,
     onProfileDelete: () -> Unit,
+    onProfileStopTracking: (LocalDate) -> Unit,
+    onProfileReactivate: () -> Unit,
 ) {
+    var showStopTrackingDialog by remember { mutableStateOf(false) }
+    var stopTrackingDateInput by remember(state.activeProfile.trackingEndDate) {
+        mutableStateOf(formatDateInput(state.activeProfile.trackingEndDate ?: LocalDate.now()))
+    }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -2917,14 +3268,19 @@ private fun WorkProfileCard(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
             )
-            OutlinedTextField(
+            DatePickerTextField(
                 value = state.activeProfileStartDateInput,
                 onValueChange = onProfileStartDateChange,
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Tracking start date") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                label = "Tracking start date",
             )
+            state.activeProfile.trackingEndDate?.let { endDate ->
+                Text(
+                    text = "Stopped tracking on ${formatDateInput(endDate)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             WorkplaceTypeSelector(
                 selectedType = state.workplaceType,
                 onTypeSelect = onWorkplaceTypeSelect,
@@ -2968,8 +3324,17 @@ private fun WorkProfileCard(
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
+                if (state.activeProfile.trackingEndDate == null) {
+                    TextButton(onClick = { showStopTrackingDialog = true }) {
+                        Text(text = "I no longer work here")
+                    }
+                } else {
+                    TextButton(onClick = onProfileReactivate) {
+                        Text(text = "Reactivate workplace")
+                    }
+                }
                 TextButton(onClick = onProfileDelete) {
                     Text(
                         text = "Delete workplace",
@@ -2998,13 +3363,11 @@ private fun WorkProfileCard(
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
                 )
-                OutlinedTextField(
+                DatePickerTextField(
                     value = state.newProfileStartDateInput,
                     onValueChange = onNewProfileStartDateChange,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("New workplace start date") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                    label = "New workplace start date",
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -3016,6 +3379,46 @@ private fun WorkProfileCard(
                 }
             }
         }
+    }
+
+    if (showStopTrackingDialog) {
+        AlertDialog(
+            onDismissRequest = { showStopTrackingDialog = false },
+            title = { Text(text = "Stop tracking this workplace?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "This keeps all existing data, but stops expected hours and overtime from counting after the date you choose.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    DatePickerTextField(
+                        value = stopTrackingDateInput,
+                        onValueChange = { stopTrackingDateInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = "Last work date",
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val endDate = runCatching { LocalDate.parse(stopTrackingDateInput) }.getOrNull()
+                        if (endDate != null) {
+                            onProfileStopTracking(endDate)
+                            showStopTrackingDialog = false
+                        }
+                    },
+                ) {
+                    Text(text = "Stop tracking")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showStopTrackingDialog = false }) {
+                    Text(text = "Cancel")
+                }
+            },
+        )
     }
 }
 
@@ -3051,11 +3454,13 @@ private fun WorkplaceTypeSelector(
 @Composable
 private fun ClockActionButton(
     isClockedIn: Boolean,
+    isTrackingEnded: Boolean,
     onClockIn: () -> Unit,
     onClockOut: () -> Unit,
 ) {
     Button(
         onClick = if (isClockedIn) onClockOut else onClockIn,
+        enabled = isClockedIn || !isTrackingEnded,
         modifier = Modifier
             .fillMaxWidth()
             .height(72.dp),
@@ -3069,7 +3474,11 @@ private fun ClockActionButton(
         ),
     ) {
         Text(
-            text = if (isClockedIn) "Clock Out" else "Clock In",
+            text = when {
+                isClockedIn -> "Clock Out"
+                isTrackingEnded -> "Workplace ended"
+                else -> "Clock In"
+            },
             fontSize = 20.sp,
             fontWeight = FontWeight.SemiBold,
         )
@@ -3081,6 +3490,7 @@ private fun DailySummaryCard(state: TimeClockUiState) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3148,6 +3558,7 @@ private fun WorkHoursSettingsCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3196,13 +3607,11 @@ private fun WorkHoursSettingsCard(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 )
             }
-            OutlinedTextField(
+            DatePickerTextField(
                 value = state.overtimeStartDateInput,
                 onValueChange = onOvertimeStartDateChange,
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Overtime balance start date") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                label = "Overtime balance start date",
             )
             OutlinedTextField(
                 value = state.startingOvertimeBalanceInput,
@@ -3261,6 +3670,7 @@ private fun ReminderSettingsCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3278,13 +3688,11 @@ private fun ReminderSettingsCard(
                 onCheckedChange = onClockInReminderToggle,
             )
             if (state.clockInReminderEnabled) {
-                OutlinedTextField(
+                TimePickerTextField(
                     value = state.clockInReminderTimeInput,
                     onValueChange = onClockInReminderTimeChange,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Start time") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                    label = "Start time",
                 )
             }
             SettingSwitchRow(
@@ -3364,6 +3772,7 @@ private fun LastSessionCard(session: WorkSession?) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3411,6 +3820,7 @@ private fun ManualEntryCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3421,33 +3831,27 @@ private fun ManualEntryCard(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
-            OutlinedTextField(
+            DatePickerTextField(
                 value = state.manualDateInput,
                 onValueChange = onDateChange,
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Date") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                label = "Date",
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                OutlinedTextField(
+                TimePickerTextField(
                     value = state.manualClockInInput,
                     onValueChange = onClockInChange,
                     modifier = Modifier.weight(1f),
-                    label = { Text("Clock in") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                    label = "Clock in",
                 )
-                OutlinedTextField(
+                TimePickerTextField(
                     value = state.manualClockOutInput,
                     onValueChange = onClockOutChange,
                     modifier = Modifier.weight(1f),
-                    label = { Text("Clock out") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                    label = "Clock out",
                 )
             }
             state.manualEntryError?.let { error ->
@@ -3487,6 +3891,7 @@ private fun AbsenceEntryCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3497,26 +3902,22 @@ private fun AbsenceEntryCard(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
-            OutlinedTextField(
+            DatePickerTextField(
                 value = state.absenceDateInput,
                 onValueChange = onDateChange,
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text(if (state.selectedAbsenceType.supportsDateRange) "Start date" else "Date") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                label = if (state.selectedAbsenceType.supportsDateRange) "Start date" else "Date",
             )
             AbsenceTypeSelector(
                 selectedType = state.selectedAbsenceType,
                 onTypeSelect = onTypeSelect,
             )
             if (state.selectedAbsenceType.supportsDateRange) {
-                OutlinedTextField(
+                DatePickerTextField(
                     value = state.absenceEndDateInput,
                     onValueChange = onEndDateChange,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("End date") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                    label = "End date",
                 )
             }
             if (state.selectedAbsenceType == AbsenceType.TIME_OFF) {
@@ -3596,6 +3997,7 @@ private fun ReportsCard(state: TimeClockUiState) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3620,6 +4022,7 @@ private fun EarningsCard(state: TimeClockUiState) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3705,6 +4108,7 @@ private fun ExportCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier
@@ -3766,21 +4170,17 @@ private fun ExportCard(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    OutlinedTextField(
+                    DatePickerTextField(
                         value = state.exportStartDateInput,
                         onValueChange = onExportStartDateChange,
                         modifier = Modifier.weight(1f),
-                        label = { Text("Start date") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                        label = "Start date",
                     )
-                    OutlinedTextField(
+                    DatePickerTextField(
                         value = state.exportEndDateInput,
                         onValueChange = onExportEndDateChange,
                         modifier = Modifier.weight(1f),
-                        label = { Text("End date") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                        label = "End date",
                     )
                 }
             }
@@ -3950,6 +4350,7 @@ private fun ChartsCard(state: TimeClockUiState) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -4242,6 +4643,7 @@ private fun OvertimeBalanceCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -4337,6 +4739,7 @@ private fun HistoryCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -4971,6 +5374,22 @@ private fun exportPeriodError(
     }
 }
 
+private fun todayOvertimeRangeError(
+    range: TodayOvertimeRange,
+    startInput: String,
+    endInput: String,
+): String? {
+    if (range != TodayOvertimeRange.CUSTOM) return null
+    val startDate = runCatching { LocalDate.parse(startInput) }.getOrNull()
+    val endDate = runCatching { LocalDate.parse(endInput) }.getOrNull()
+
+    return when {
+        startDate == null || endDate == null -> "Use dates like YYYY-MM-DD."
+        endDate.isBefore(startDate) -> "End date must be after start date."
+        else -> null
+    }
+}
+
 private fun WorkSession.overlapsExportPeriod(
     period: ExportPeriod,
     zoneId: ZoneId,
@@ -5132,6 +5551,53 @@ private fun buildOvertimeBalance(state: TimeClockUiState): OvertimeBalance {
     )
 }
 
+private fun buildTodayOvertimeBalance(state: TimeClockUiState): TodayOvertimeBalance {
+    val today = LocalDate.now()
+    val defaultStartDate = todayStartDateForOvertimeRange(state.selectedTodayOvertimeRange, today)
+    val parsedCustomStart = runCatching { LocalDate.parse(state.todayOvertimeStartDateInput) }.getOrNull()
+    val parsedCustomEnd = runCatching { LocalDate.parse(state.todayOvertimeEndDateInput) }.getOrNull()
+    val rawStartDate = if (state.selectedTodayOvertimeRange == TodayOvertimeRange.CUSTOM) {
+        parsedCustomStart ?: today
+    } else {
+        defaultStartDate
+    }
+    val rawEndDate = if (state.selectedTodayOvertimeRange == TodayOvertimeRange.CUSTOM) {
+        parsedCustomEnd ?: rawStartDate
+    } else {
+        today
+    }
+    val startDate = rawStartDate.coerceAtLeast(state.activeProfile.trackingStartDate)
+    val endDate = if (rawEndDate.isBefore(startDate)) startDate else rawEndDate
+    val actualDuration = actualDurationForRange(startDate, endDate, state)
+    val expectedDuration = expectedDurationForRange(startDate, endDate, state)
+
+    return TodayOvertimeBalance(
+        label = if (state.selectedTodayOvertimeRange == TodayOvertimeRange.CUSTOM) {
+            "${formatDateInput(startDate)} to ${formatDateInput(endDate)}"
+        } else {
+            state.selectedTodayOvertimeRange.label
+        },
+        startDate = startDate,
+        endDate = endDate,
+        actualDuration = actualDuration,
+        expectedDuration = expectedDuration,
+        startingBalance = Duration.ZERO,
+    )
+}
+
+private fun todayStartDateForOvertimeRange(
+    range: TodayOvertimeRange,
+    today: LocalDate,
+): LocalDate {
+    return when (range) {
+        TodayOvertimeRange.ONE_WEEK -> today.minusWeeks(1).plusDays(1)
+        TodayOvertimeRange.FOUR_WEEKS -> today.minusWeeks(4).plusDays(1)
+        TodayOvertimeRange.SIX_MONTHS -> today.minusMonths(6).plusDays(1)
+        TodayOvertimeRange.TWELVE_MONTHS -> today.minusYears(1).plusDays(1)
+        TodayOvertimeRange.CUSTOM -> today
+    }
+}
+
 private fun startDateForOvertimeRange(
     range: OvertimeRange,
     allTimeStartDate: LocalDate,
@@ -5285,14 +5751,15 @@ private fun expectedDurationForRange(
     state: TimeClockUiState,
 ): Duration {
     var date = startDate.coerceAtLeast(state.activeProfile.trackingStartDate)
-    if (date.isAfter(endDate)) return Duration.ZERO
+    val effectiveEndDate = state.activeProfile.trackingEndDate?.let { minOf(endDate, it) } ?: endDate
+    if (date.isAfter(effectiveEndDate)) return Duration.ZERO
 
     val dailyExpected = state.expectedDailyDuration.plus(
         if (state.deductUnpaidLunchBreak) state.lunchBreakDuration else Duration.ZERO,
     )
     var expected = Duration.ZERO
 
-    while (!date.isAfter(endDate)) {
+    while (!date.isAfter(effectiveEndDate)) {
         val hasCoveredAbsence = state.absences.any { it.date == date && it.type.coversExpectedHours }
         if (date.dayOfWeek in state.workDays && !hasCoveredAbsence) {
             expected = expected.plus(dailyExpected)
@@ -5539,6 +6006,13 @@ private val OVERTIME_RANGE_ROW_TWO = listOf(
     OvertimeRange.TWELVE_MONTHS,
     OvertimeRange.ALL_TIME,
 )
+private val TODAY_OVERTIME_RANGES = listOf(
+    TodayOvertimeRange.ONE_WEEK,
+    TodayOvertimeRange.FOUR_WEEKS,
+    TodayOvertimeRange.SIX_MONTHS,
+    TodayOvertimeRange.TWELVE_MONTHS,
+    TodayOvertimeRange.CUSTOM,
+)
 
 @Preview(showBackground = true)
 @Composable
@@ -5576,9 +6050,12 @@ private fun ClockedOutPreview() {
             onClockIn = {},
             onClockOut = {},
             onActiveClockInChange = {},
-            onActiveClockInSave = {},
+            onActiveClockInSave = { true },
             onRecentClockOutChange = {},
-            onRecentClockOutSave = {},
+            onRecentClockOutSave = { true },
+            onTodayOvertimeRangeChange = {},
+            onTodayOvertimeStartDateChange = {},
+            onTodayOvertimeEndDateChange = {},
             onInsightsSectionSelect = {},
             onExportExpandToggle = {},
             onProfileSelect = {},
@@ -5592,6 +6069,8 @@ private fun ClockedOutPreview() {
             onNewProfileStartDateChange = {},
             onProfileCreate = {},
             onProfileDelete = {},
+            onProfileStopTracking = { _ -> },
+            onProfileReactivate = {},
             onHistoryDayToggle = {},
             onManualDateChange = {},
             onManualClockInChange = {},
@@ -5662,9 +6141,12 @@ private fun ClockedInPreview() {
             onClockIn = {},
             onClockOut = {},
             onActiveClockInChange = {},
-            onActiveClockInSave = {},
+            onActiveClockInSave = { true },
             onRecentClockOutChange = {},
-            onRecentClockOutSave = {},
+            onRecentClockOutSave = { true },
+            onTodayOvertimeRangeChange = {},
+            onTodayOvertimeStartDateChange = {},
+            onTodayOvertimeEndDateChange = {},
             onInsightsSectionSelect = {},
             onExportExpandToggle = {},
             onProfileSelect = {},
@@ -5678,6 +6160,8 @@ private fun ClockedInPreview() {
             onNewProfileStartDateChange = {},
             onProfileCreate = {},
             onProfileDelete = {},
+            onProfileStopTracking = { _ -> },
+            onProfileReactivate = {},
             onHistoryDayToggle = {},
             onManualDateChange = {},
             onManualClockInChange = {},
