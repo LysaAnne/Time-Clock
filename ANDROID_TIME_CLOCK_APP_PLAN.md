@@ -639,6 +639,8 @@ Implemented:
 
 Allow the user to take their data elsewhere.
 
+Status: **Built in version 1.6.0**
+
 Consider:
 
 - Export to CSV
@@ -648,7 +650,52 @@ Consider:
 - Include notes and edited entries
 - Include hours, overtime balance, absence entries, time off, workplace name, and earnings when available
 
-### 17. Backup and Sync
+Implemented:
+
+- Export button in Insights
+- Choose all registered time or a specific start/end date period
+- Choose which data sections to include before exporting
+- Toggle workplace settings, report summaries, overtime balance, earnings, sessions, absences/time off, and notes
+- Share CSV data directly as text through the Android share sheet
+- Share CSV report as an attached `.csv` file through the Android share sheet
+- Save CSV report to Downloads
+- Share a formatted PDF report through the Android share sheet
+- Save a formatted PDF report to Downloads
+- PDF report has a simple graphical overview with header and summary cards
+- Export is generated for the active workplace
+- Includes workplace settings, expected hours, workdays, unpaid lunch, and pay settings
+- Includes report summaries for today, week, month, half year, and year
+- Includes selected overtime balance range and totals
+- Includes earnings estimates when available
+- Includes completed and active work sessions
+- Includes vacation/holiday, sick day, no-work, and time-off entries
+- Escapes CSV cells so notes and workplace names are spreadsheet-friendly
+
+### 17. Small Fixes and Workflow Improvements
+
+Small improvements that make everyday time tracking smoother.
+
+Status: **Planned**
+
+Consider:
+
+- Edit the active clock-in time while still clocked in
+- Keep the active timer running after changing the current clock-in time
+- Use this when the user forgot to clock in at the real start time
+- Offer a quick clock-out time adjustment immediately after clocking out
+- Let the user correct the just-finished session without going into History first
+- Keep all edited active/just-finished sessions in the same workplace
+- Recalculate today total, overtime, reminders, widgets, and reports after these quick edits
+
+Recommended first version:
+
+- Add an edit action near the active timer
+- Let the user enter a new clock-in time for today while clocked in
+- Validate that the new clock-in time is before now
+- After clock-out, show a short-lived or visible option to adjust the clock-out time
+- Save the corrected session and update today/history immediately
+
+### 18. Backup and Sync
 
 Protect the data if the phone is lost.
 
@@ -661,7 +708,7 @@ Consider:
 - Multi-device support
 - Restore from backup
 
-### 18. Data Privacy
+### 19. Data Privacy
 
 Important because work-time data is personal.
 
@@ -673,7 +720,7 @@ Consider:
 - Optional app lock
 - Avoid unnecessary tracking
 
-### 19. Polish and Convenience
+### 20. Polish and Convenience
 
 Small features that make the app feel good to use.
 
@@ -707,7 +754,8 @@ Build the app in this order:
 15. Add workplace type, pay, and earnings
 16. Add home screen widgets
 17. Add export
-18. Add backup
+18. Add small fixes and workflow improvements
+19. Add backup
 
 ## First Feature To Build
 

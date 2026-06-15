@@ -72,6 +72,9 @@ Features 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, and 13 are implemented. Feature 6 w
 - Show profile-specific earnings estimates in Insights
 - Add a Today home-screen widget with workplace selection, clock in/out, active timer, and today's total
 - Add a Balance home-screen widget with workplace selection and overtime balance
+- Export the active workplace as CSV text, CSV file, or a formatted PDF report from Insights
+- Export all registered time or a specific start/end date period
+- Choose which data sections to include before exporting
 
 Expected time inputs accept formats like `7:30`, `7h30m`, `7 30`, `450m`, or decimal hours like `7.5`.
 Starting overtime balance accepts formats like `2:30` or `-1:15` and is applied to the all-time overtime balance.

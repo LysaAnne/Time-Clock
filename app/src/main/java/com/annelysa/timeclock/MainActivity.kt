@@ -6,11 +6,20 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Typeface
+import android.graphics.pdf.PdfDocument
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -34,6 +43,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -74,6 +84,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.FileProvider
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.time.DayOfWeek
 import java.time.Duration
 import java.time.Instant
@@ -138,12 +151,118 @@ class MainActivity : ComponentActivity() {
                     onOvertimeStartDateChange = viewModel::updateOvertimeStartDate,
                     onStartingOvertimeBalanceChange = viewModel::updateStartingOvertimeBalance,
                     onOvertimeRangeChange = viewModel::updateOvertimeRange,
+                    onShareCsvText = { shareCsvTextExport(state) },
+                    onShareCsvFile = { shareCsvFileExport(state) },
+                    onSaveCsv = { saveCsvExport(state) },
+                    onSharePdf = { sharePdfExport(state) },
+                    onSavePdf = { savePdfExport(state) },
+                    onExportOptionToggle = viewModel::toggleExportOption,
+                    onExportRangeModeSelect = viewModel::selectExportRangeMode,
+                    onExportStartDateChange = viewModel::updateExportStartDate,
+                    onExportEndDateChange = viewModel::updateExportEndDate,
                     onClockInReminderToggle = viewModel::toggleClockInReminder,
                     onClockInReminderTimeChange = viewModel::updateClockInReminderTime,
                     onClockOutReminderToggle = viewModel::toggleClockOutReminder,
                 )
             }
         }
+    }
+
+    private fun shareCsvTextExport(state: TimeClockUiState) {
+        val csv = buildExportCsv(state)
+        val fileName = "time-clock-${state.activeProfile.name.toFileNamePart()}-${formatDateInput(LocalDate.now())}.csv"
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/csv"
+            putExtra(Intent.EXTRA_SUBJECT, fileName)
+            putExtra(Intent.EXTRA_TITLE, fileName)
+            putExtra(Intent.EXTRA_TEXT, csv)
+        }
+        startActivity(Intent.createChooser(shareIntent, "Share CSV text"))
+    }
+
+    private fun shareCsvFileExport(state: TimeClockUiState) {
+        val fileName = exportFileName(state, "csv")
+        val exportDir = File(cacheDir, "exports").apply { mkdirs() }
+        val file = File(exportDir, fileName)
+        file.writeText(buildExportCsv(state))
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/csv"
+            putExtra(Intent.EXTRA_SUBJECT, "Time report: ${state.activeProfile.name}")
+            putExtra(Intent.EXTRA_TITLE, fileName)
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(shareIntent, "Share CSV file"))
+    }
+
+    private fun saveCsvExport(state: TimeClockUiState) {
+        val fileName = exportFileName(state, "csv")
+        val bytes = buildExportCsv(state).toByteArray()
+        saveBytesToDownloads(
+            fileName = fileName,
+            mimeType = "text/csv",
+            bytes = bytes,
+            successMessage = "CSV saved to Downloads",
+            fallback = { shareCsvFileExport(state) },
+        )
+    }
+
+    private fun sharePdfExport(state: TimeClockUiState) {
+        val fileName = exportFileName(state, "pdf")
+        val exportDir = File(cacheDir, "exports").apply { mkdirs() }
+        val file = File(exportDir, fileName)
+        file.writeBytes(buildExportPdfBytes(state))
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/pdf"
+            putExtra(Intent.EXTRA_SUBJECT, "Time report: ${state.activeProfile.name}")
+            putExtra(Intent.EXTRA_TITLE, fileName)
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(shareIntent, "Share PDF report"))
+    }
+
+    private fun savePdfExport(state: TimeClockUiState) {
+        saveBytesToDownloads(
+            fileName = exportFileName(state, "pdf"),
+            mimeType = "application/pdf",
+            bytes = buildExportPdfBytes(state),
+            successMessage = "PDF saved to Downloads",
+            fallback = { sharePdfExport(state) },
+        )
+    }
+
+    private fun saveBytesToDownloads(
+        fileName: String,
+        mimeType: String,
+        bytes: ByteArray,
+        successMessage: String,
+        fallback: () -> Unit,
+    ) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                put(MediaStore.Downloads.MIME_TYPE, mimeType)
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            }
+            val uri: Uri? = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            if (uri != null) {
+                contentResolver.openOutputStream(uri)?.use { outputStream ->
+                    outputStream.write(bytes)
+                }
+                Toast.makeText(this, successMessage, Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(this, "Could not save file", Toast.LENGTH_LONG).show()
+            }
+        } else {
+            fallback()
+        }
+    }
+
+    private fun exportFileName(state: TimeClockUiState, extension: String): String {
+        return "time-clock-${state.activeProfile.name.toFileNamePart()}-${formatDateInput(LocalDate.now())}.$extension"
     }
 
     private fun createReminderNotificationChannel() {
@@ -230,6 +349,11 @@ data class TimeClockUiState(
     val clockOutReminderEnabled: Boolean = false,
     val clockOutReminderSentMask: Int = 0,
     val reminderSettingsError: String? = null,
+    val exportOptions: ExportOptions = ExportOptions(),
+    val exportRangeMode: ExportRangeMode = ExportRangeMode.ALL_REGISTERED,
+    val exportStartDateInput: String = formatDateInput(LocalDate.now()),
+    val exportEndDateInput: String = formatDateInput(LocalDate.now()),
+    val exportPeriodError: String? = null,
 )
 
 data class WorkProfile(
@@ -287,6 +411,39 @@ data class EarningsRow(
     val label: String,
     val amount: Double,
     val basis: String,
+)
+
+data class ExportOptions(
+    val includeWorkplaceSettings: Boolean = true,
+    val includeReportSummaries: Boolean = true,
+    val includeOvertimeBalance: Boolean = true,
+    val includeEarnings: Boolean = true,
+    val includeSessions: Boolean = true,
+    val includeAbsences: Boolean = true,
+    val includeNotes: Boolean = true,
+)
+
+enum class ExportOption(
+    val label: String,
+) {
+    WORKPLACE_SETTINGS("Workplace settings"),
+    REPORT_SUMMARIES("Report summaries"),
+    OVERTIME_BALANCE("Overtime balance"),
+    EARNINGS("Earnings"),
+    SESSIONS("Work sessions"),
+    ABSENCES("Absences and time off"),
+    NOTES("Notes"),
+}
+
+enum class ExportRangeMode(val label: String) {
+    ALL_REGISTERED("All registered time"),
+    CUSTOM("Specific period"),
+}
+
+data class ExportPeriod(
+    val label: String,
+    val startDate: LocalDate,
+    val endDate: LocalDate,
 )
 
 data class OvertimeBalance(
@@ -1029,6 +1186,70 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
 
         _uiState.value = _uiState.value.copy(selectedOvertimeRange = range)
         refreshHomeScreenWidgets()
+    }
+
+    fun toggleExportOption(option: ExportOption) {
+        val currentOptions = _uiState.value.exportOptions
+        val updatedOptions = when (option) {
+            ExportOption.WORKPLACE_SETTINGS -> currentOptions.copy(
+                includeWorkplaceSettings = !currentOptions.includeWorkplaceSettings,
+            )
+            ExportOption.REPORT_SUMMARIES -> currentOptions.copy(
+                includeReportSummaries = !currentOptions.includeReportSummaries,
+            )
+            ExportOption.OVERTIME_BALANCE -> currentOptions.copy(
+                includeOvertimeBalance = !currentOptions.includeOvertimeBalance,
+            )
+            ExportOption.EARNINGS -> currentOptions.copy(
+                includeEarnings = !currentOptions.includeEarnings,
+            )
+            ExportOption.SESSIONS -> currentOptions.copy(
+                includeSessions = !currentOptions.includeSessions,
+            )
+            ExportOption.ABSENCES -> currentOptions.copy(
+                includeAbsences = !currentOptions.includeAbsences,
+            )
+            ExportOption.NOTES -> currentOptions.copy(
+                includeNotes = !currentOptions.includeNotes,
+            )
+        }
+
+        _uiState.value = _uiState.value.copy(exportOptions = updatedOptions)
+    }
+
+    fun selectExportRangeMode(mode: ExportRangeMode) {
+        _uiState.value = _uiState.value.copy(
+            exportRangeMode = mode,
+            exportPeriodError = exportPeriodError(
+                mode = mode,
+                startInput = _uiState.value.exportStartDateInput,
+                endInput = _uiState.value.exportEndDateInput,
+            ),
+        )
+    }
+
+    fun updateExportStartDate(input: String) {
+        val sanitizedInput = input.take(10)
+        _uiState.value = _uiState.value.copy(
+            exportStartDateInput = sanitizedInput,
+            exportPeriodError = exportPeriodError(
+                mode = _uiState.value.exportRangeMode,
+                startInput = sanitizedInput,
+                endInput = _uiState.value.exportEndDateInput,
+            ),
+        )
+    }
+
+    fun updateExportEndDate(input: String) {
+        val sanitizedInput = input.take(10)
+        _uiState.value = _uiState.value.copy(
+            exportEndDateInput = sanitizedInput,
+            exportPeriodError = exportPeriodError(
+                mode = _uiState.value.exportRangeMode,
+                startInput = _uiState.value.exportStartDateInput,
+                endInput = sanitizedInput,
+            ),
+        )
     }
 
     fun toggleClockInReminder(enabled: Boolean) {
@@ -1898,6 +2119,15 @@ fun TimeClockScreen(
     onOvertimeStartDateChange: (String) -> Unit,
     onStartingOvertimeBalanceChange: (String) -> Unit,
     onOvertimeRangeChange: (OvertimeRange) -> Unit,
+    onShareCsvText: () -> Unit,
+    onShareCsvFile: () -> Unit,
+    onSaveCsv: () -> Unit,
+    onSharePdf: () -> Unit,
+    onSavePdf: () -> Unit,
+    onExportOptionToggle: (ExportOption) -> Unit,
+    onExportRangeModeSelect: (ExportRangeMode) -> Unit,
+    onExportStartDateChange: (String) -> Unit,
+    onExportEndDateChange: (String) -> Unit,
     onClockInReminderToggle: (Boolean) -> Unit,
     onClockInReminderTimeChange: (String) -> Unit,
     onClockOutReminderToggle: (Boolean) -> Unit,
@@ -1972,6 +2202,15 @@ fun TimeClockScreen(
                 AppTab.INSIGHTS -> InsightsTab(
                     state = state,
                     onOvertimeRangeChange = onOvertimeRangeChange,
+                    onShareCsvText = onShareCsvText,
+                    onShareCsvFile = onShareCsvFile,
+                    onSaveCsv = onSaveCsv,
+                    onSharePdf = onSharePdf,
+                    onSavePdf = onSavePdf,
+                    onExportOptionToggle = onExportOptionToggle,
+                    onExportRangeModeSelect = onExportRangeModeSelect,
+                    onExportStartDateChange = onExportStartDateChange,
+                    onExportEndDateChange = onExportEndDateChange,
                 )
                 AppTab.SETTINGS -> SettingsTab(
                     state = state,
@@ -2100,6 +2339,15 @@ private fun HistoryTab(
 private fun InsightsTab(
     state: TimeClockUiState,
     onOvertimeRangeChange: (OvertimeRange) -> Unit,
+    onShareCsvText: () -> Unit,
+    onShareCsvFile: () -> Unit,
+    onSaveCsv: () -> Unit,
+    onSharePdf: () -> Unit,
+    onSavePdf: () -> Unit,
+    onExportOptionToggle: (ExportOption) -> Unit,
+    onExportRangeModeSelect: (ExportRangeMode) -> Unit,
+    onExportStartDateChange: (String) -> Unit,
+    onExportEndDateChange: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -2111,6 +2359,18 @@ private fun InsightsTab(
         OvertimeBalanceCard(
             state = state,
             onOvertimeRangeChange = onOvertimeRangeChange,
+        )
+        ExportCard(
+            state = state,
+            onShareCsvText = onShareCsvText,
+            onShareCsvFile = onShareCsvFile,
+            onSaveCsv = onSaveCsv,
+            onSharePdf = onSharePdf,
+            onSavePdf = onSavePdf,
+            onExportOptionToggle = onExportOptionToggle,
+            onExportRangeModeSelect = onExportRangeModeSelect,
+            onExportStartDateChange = onExportStartDateChange,
+            onExportEndDateChange = onExportEndDateChange,
         )
     }
 }
@@ -3103,6 +3363,195 @@ private fun EarningsSummaryRow(
 }
 
 @Composable
+private fun ExportCard(
+    state: TimeClockUiState,
+    onShareCsvText: () -> Unit,
+    onShareCsvFile: () -> Unit,
+    onSaveCsv: () -> Unit,
+    onSharePdf: () -> Unit,
+    onSavePdf: () -> Unit,
+    onExportOptionToggle: (ExportOption) -> Unit,
+    onExportRangeModeSelect: (ExportRangeMode) -> Unit,
+    onExportStartDateChange: (String) -> Unit,
+    onExportEndDateChange: (String) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F7FF)),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "Export",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "Share reports for this workplace",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "Period",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ExportRangeMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = mode == state.exportRangeMode,
+                        onClick = { onExportRangeModeSelect(mode) },
+                        label = {
+                            Text(
+                                text = mode.label,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            if (state.exportRangeMode == ExportRangeMode.CUSTOM) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = state.exportStartDateInput,
+                        onValueChange = onExportStartDateChange,
+                        modifier = Modifier.weight(1f),
+                        label = { Text("Start date") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                    )
+                    OutlinedTextField(
+                        value = state.exportEndDateInput,
+                        onValueChange = onExportEndDateChange,
+                        modifier = Modifier.weight(1f),
+                        label = { Text("End date") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                    )
+                }
+            }
+            state.exportPeriodError?.let { error ->
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFB42318),
+                )
+            }
+            Text(
+                text = "Include in export",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            ExportOption.entries.chunked(2).forEach { rowOptions ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    rowOptions.forEach { option ->
+                        ExportOptionRow(
+                            option = option,
+                            checked = state.exportOptions.isEnabled(option),
+                            onToggle = { onExportOptionToggle(option) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    repeat(2 - rowOptions.size) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+            Text(
+                text = "PDF",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = onSharePdf,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(text = "Share PDF")
+                }
+                Button(
+                    onClick = onSavePdf,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(text = "Save PDF")
+                }
+            }
+            Text(
+                text = "CSV",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = onShareCsvFile,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(text = "Share CSV")
+                }
+                Button(
+                    onClick = onSaveCsv,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(text = "Save CSV")
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = onShareCsvText) {
+                    Text(text = "Copy/share CSV text")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExportOptionRow(
+    option: ExportOption,
+    checked: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(
+            checked = checked,
+            onCheckedChange = { onToggle() },
+        )
+        Text(
+            text = option.label,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
 private fun ReportRow(report: WorkReport) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
@@ -3785,6 +4234,414 @@ private fun formatMoney(amount: Double, currency: String): String {
     return "$safeCurrency ${"%,.2f".format(amount.coerceAtLeast(0.0))}"
 }
 
+private fun buildExportCsv(state: TimeClockUiState): String {
+    val zoneId = ZoneId.systemDefault()
+    val period = resolveExportPeriod(state)
+    val reports = listOf(buildReport(period.label, period.startDate, period.endDate, state))
+    val earningsRows = buildEarningsRowsForReports(state, reports)
+    val overtimeActual = actualDurationForRange(period.startDate, period.endDate, state)
+    val overtimeExpected = expectedDurationForRange(period.startDate, period.endDate, state)
+    val exportBalance = overtimeActual.minus(overtimeExpected)
+    val currency = state.currencyInput.ifBlank { DEFAULT_CURRENCY_INPUT }
+    val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now()) }
+    val sessions = (state.completedSessions + listOfNotNull(activeSession))
+        .filter { it.overlapsExportPeriod(period, zoneId) }
+        .sortedBy { it.clockIn }
+    val absences = state.absences
+        .filter { it.date.isInExportPeriod(period) }
+        .sortedBy { it.date }
+    val csv = StringBuilder()
+
+    fun row(vararg cells: String) {
+        csv.append(cells.joinToString(separator = ",") { it.toCsvCell() }).append('\n')
+    }
+
+    row("Time Clock Export")
+    row("Exported", LocalDate.now().toString())
+    row("Period", period.label)
+    row("Start date", formatDateInput(period.startDate))
+    row("End date", formatDateInput(period.endDate))
+    row()
+
+    if (state.exportOptions.includeWorkplaceSettings) {
+        row("Workplace")
+        row("Name", state.activeProfile.name)
+        row("Tracking start date", formatDateInput(state.activeProfile.trackingStartDate))
+        row("Workplace type", state.workplaceType.label)
+        row("Expected per workday", formatHoursAndMinutes(state.expectedDailyDuration))
+        row("Expected per week", formatHoursAndMinutes(state.expectedWeeklyDuration))
+        row("Workdays", state.workDays.sortedBy { it.value }.joinToString(" ") { it.shortLabel() })
+        row("Unpaid lunch", if (state.deductUnpaidLunchBreak) formatHoursAndMinutes(state.lunchBreakDuration) else "No")
+        if (state.workplaceType == WorkplaceType.FIXED_HOURS_FIXED_PAY && state.monthlySalaryInput.isNotBlank()) {
+            row("Monthly salary", "${currency} ${state.monthlySalaryInput}")
+        }
+        if (state.workplaceType == WorkplaceType.HOURLY_PAID && state.hourlyRateInput.isNotBlank()) {
+            row("Hourly rate", "${currency} ${state.hourlyRateInput}")
+        }
+        row()
+    }
+
+    if (state.exportOptions.includeReportSummaries) {
+        row("Reports")
+        row("Period", "Start date", "End date", "Actual hours", "Expected hours", "Balance")
+        reports.forEach { report ->
+            row(
+                report.label,
+                formatDateInput(report.startDate),
+                formatDateInput(report.endDate),
+                formatHoursAndMinutes(report.actualDuration),
+                formatHoursAndMinutes(report.expectedDuration),
+                formatSignedBalance(report.balanceDuration),
+            )
+        }
+        row()
+    }
+
+    if (state.exportOptions.includeOvertimeBalance) {
+        row("Overtime balance")
+        row("Period", "Start date", "End date", "Actual hours", "Expected hours", "Balance")
+        row(
+            period.label,
+            formatDateInput(period.startDate),
+            formatDateInput(period.endDate),
+            formatHoursAndMinutes(overtimeActual),
+            formatHoursAndMinutes(overtimeExpected),
+            formatSignedBalance(exportBalance),
+        )
+        row()
+    }
+
+    if (state.exportOptions.includeEarnings) {
+        row("Earnings")
+        if (earningsRows.isEmpty()) {
+            row("No earnings estimate available")
+        } else {
+            row("Period", "Amount", "Basis")
+            earningsRows.forEach { earnings ->
+                row(earnings.label, formatMoney(earnings.amount, currency), earnings.basis)
+            }
+        }
+        row()
+    }
+
+    if (state.exportOptions.includeSessions) {
+        row("Sessions")
+        row("Date", "Clock in", "Clock out", "Duration", "Status")
+        sessions.forEach { session ->
+            val clockIn = session.clockIn.atZone(zoneId)
+            val clockOut = session.clockOut.atZone(zoneId)
+            row(
+                formatDateInput(clockIn.toLocalDate()),
+                TIME_FORMATTER.format(clockIn),
+                TIME_FORMATTER.format(clockOut),
+                formatHoursAndMinutes(session.duration),
+                if (activeSession != null && session.clockIn == activeSession.clockIn) "Active" else "Completed",
+            )
+        }
+        row()
+    }
+
+    if (state.exportOptions.includeAbsences) {
+        row("Absences and time off")
+        row("Date", "Type", "Hours", if (state.exportOptions.includeNotes) "Note" else "")
+        absences.forEach { absence ->
+            row(
+                formatDateInput(absence.date),
+                absence.type.label,
+                if (absence.duration > Duration.ZERO) formatHoursAndMinutes(absence.duration) else "",
+                if (state.exportOptions.includeNotes) absence.note else "",
+            )
+        }
+    }
+
+    return csv.toString()
+}
+
+private fun buildExportPdfBytes(state: TimeClockUiState): ByteArray {
+    val document = PdfDocument()
+    val output = ByteArrayOutputStream()
+    val pageWidth = 595
+    val pageHeight = 842
+    val margin = 40f
+    var pageNumber = 1
+    var page = document.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
+    var canvas = page.canvas
+    var y = margin
+
+    val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(17, 24, 39)
+        textSize = 22f
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+    }
+    val whiteTitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        textSize = 22f
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+    }
+    val whiteBodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        textSize = 10.5f
+    }
+    val headingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(15, 118, 110)
+        textSize = 15f
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+    }
+    val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(31, 41, 55)
+        textSize = 10.5f
+    }
+    val mutedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(75, 85, 99)
+        textSize = 9.5f
+    }
+    val cardTitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(75, 85, 99)
+        textSize = 9.5f
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+    }
+    val cardValuePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(17, 24, 39)
+        textSize = 13f
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+    }
+    val tealFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(15, 118, 110)
+        style = Paint.Style.FILL
+    }
+    val cardFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(246, 251, 249)
+        style = Paint.Style.FILL
+    }
+
+    fun newPage() {
+        document.finishPage(page)
+        pageNumber += 1
+        page = document.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
+        canvas = page.canvas
+        y = margin
+    }
+
+    fun ensureSpace(height: Float) {
+        if (y + height > pageHeight - margin) newPage()
+    }
+
+    fun line(text: String, paint: Paint = bodyPaint, indent: Float = 0f, gap: Float = 16f) {
+        ensureSpace(gap)
+        canvas.drawText(text, margin + indent, y, paint)
+        y += gap
+    }
+
+    fun section(title: String) {
+        ensureSpace(30f)
+        y += 8f
+        line(title, headingPaint, gap = 20f)
+    }
+
+    fun keyValue(key: String, value: String) {
+        line("$key: $value", bodyPaint, gap = 14f)
+    }
+
+    fun summaryCard(x: Float, title: String, value: String) {
+        val width = 122f
+        val height = 54f
+        canvas.drawRoundRect(RectF(x, y, x + width, y + height), 12f, 12f, cardFillPaint)
+        canvas.drawText(title, x + 10f, y + 18f, cardTitlePaint)
+        canvas.drawText(value, x + 10f, y + 39f, cardValuePaint)
+    }
+
+    val period = resolveExportPeriod(state)
+    val reports = listOf(buildReport(period.label, period.startDate, period.endDate, state))
+    val earningsRows = buildEarningsRowsForReports(state, reports)
+    val overtimeActual = actualDurationForRange(period.startDate, period.endDate, state)
+    val overtimeExpected = expectedDurationForRange(period.startDate, period.endDate, state)
+    val exportBalance = overtimeActual.minus(overtimeExpected)
+    val currency = state.currencyInput.ifBlank { DEFAULT_CURRENCY_INPUT }
+    val zoneId = ZoneId.systemDefault()
+    val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now()) }
+    val sessions = (state.completedSessions + listOfNotNull(activeSession))
+        .filter { it.overlapsExportPeriod(period, zoneId) }
+        .sortedByDescending { it.clockIn }
+    val absences = state.absences
+        .filter { it.date.isInExportPeriod(period) }
+        .sortedByDescending { it.date }
+    val earningsTotal = earningsRows.sumOf { it.amount }
+
+    canvas.drawRoundRect(RectF(margin, margin, pageWidth - margin, 128f), 18f, 18f, tealFillPaint)
+    canvas.drawText("Time Clock Report", margin + 18f, 76f, whiteTitlePaint)
+    canvas.drawText(state.activeProfile.name, margin + 18f, 98f, whiteBodyPaint)
+    canvas.drawText("${period.label}: ${formatDateInput(period.startDate)} to ${formatDateInput(period.endDate)}", margin + 18f, 116f, whiteBodyPaint)
+    y = 158f
+
+    summaryCard(margin, "Worked", formatHoursAndMinutes(overtimeActual))
+    summaryCard(margin + 132f, "Expected", formatHoursAndMinutes(overtimeExpected))
+    summaryCard(margin + 264f, "Balance", formatSignedBalance(exportBalance))
+    summaryCard(margin + 396f, "Earnings", if (earningsRows.isEmpty()) "-" else formatMoney(earningsTotal, currency))
+    y += 76f
+
+    line("Generated ${formatDateInput(LocalDate.now())}", mutedPaint, gap = 18f)
+
+    if (state.exportOptions.includeWorkplaceSettings) {
+        section("Workplace")
+        keyValue("Tracking start", formatDateInput(state.activeProfile.trackingStartDate))
+        keyValue("Type", state.workplaceType.label)
+        keyValue("Expected workday", formatHoursAndMinutes(state.expectedDailyDuration))
+        keyValue("Expected week", formatHoursAndMinutes(state.expectedWeeklyDuration))
+        keyValue("Workdays", state.workDays.sortedBy { it.value }.joinToString(" ") { it.shortLabel() })
+        keyValue("Unpaid lunch", if (state.deductUnpaidLunchBreak) formatHoursAndMinutes(state.lunchBreakDuration) else "No")
+        if (state.workplaceType == WorkplaceType.FIXED_HOURS_FIXED_PAY && state.monthlySalaryInput.isNotBlank()) {
+            keyValue("Monthly salary", "$currency ${state.monthlySalaryInput}")
+        }
+        if (state.workplaceType == WorkplaceType.HOURLY_PAID && state.hourlyRateInput.isNotBlank()) {
+            keyValue("Hourly rate", "$currency ${state.hourlyRateInput}")
+        }
+    }
+
+    if (state.exportOptions.includeReportSummaries) {
+        section("Report Summary")
+        reports.forEach { report ->
+            line(
+                "${report.label}: ${formatHoursAndMinutes(report.actualDuration)} worked, ${formatHoursAndMinutes(report.expectedDuration)} expected, ${formatSignedBalance(report.balanceDuration)}",
+                bodyPaint,
+                gap = 14f,
+            )
+            line("${formatDateInput(report.startDate)} to ${formatDateInput(report.endDate)}", mutedPaint, indent = 10f, gap = 12f)
+        }
+    }
+
+    if (state.exportOptions.includeOvertimeBalance) {
+        section("Overtime Balance")
+        keyValue("Period", "${period.label}: ${formatDateInput(period.startDate)} to ${formatDateInput(period.endDate)}")
+        keyValue("Actual", formatHoursAndMinutes(overtimeActual))
+        keyValue("Expected", formatHoursAndMinutes(overtimeExpected))
+        keyValue("Balance", formatSignedBalance(exportBalance))
+    }
+
+    if (state.exportOptions.includeEarnings) {
+        section("Earnings")
+        if (earningsRows.isEmpty()) {
+            line("No earnings estimate available", mutedPaint, gap = 14f)
+        } else {
+            earningsRows.forEach { row ->
+                line("${row.label}: ${formatMoney(row.amount, currency)}", bodyPaint, gap = 14f)
+                line(row.basis, mutedPaint, indent = 10f, gap = 12f)
+            }
+        }
+    }
+
+    if (state.exportOptions.includeSessions) {
+        section("Recent Sessions")
+        if (sessions.isEmpty()) {
+            line("No sessions yet", mutedPaint, gap = 14f)
+        } else {
+            sessions.take(30).forEach { session ->
+                val clockIn = session.clockIn.atZone(zoneId)
+                val clockOut = session.clockOut.atZone(zoneId)
+                val status = if (activeSession != null && session.clockIn == activeSession.clockIn) "active" else "completed"
+                line(
+                    "${formatDateInput(clockIn.toLocalDate())}  ${TIME_FORMATTER.format(clockIn)}-${TIME_FORMATTER.format(clockOut)}  ${formatHoursAndMinutes(session.duration)}  $status",
+                    bodyPaint,
+                    gap = 14f,
+                )
+            }
+        }
+    }
+
+    if (state.exportOptions.includeAbsences) {
+        section("Absences And Time Off")
+        if (absences.isEmpty()) {
+            line("No absence entries", mutedPaint, gap = 14f)
+        } else {
+            absences.take(40).forEach { absence ->
+                val hours = if (absence.duration > Duration.ZERO) " (${formatHoursAndMinutes(absence.duration)})" else ""
+                val note = if (state.exportOptions.includeNotes && absence.note.isNotBlank()) " - ${absence.note}" else ""
+                line("${formatDateInput(absence.date)}  ${absence.type.label}$hours$note", bodyPaint, gap = 14f)
+            }
+        }
+    }
+
+    document.finishPage(page)
+    document.writeTo(output)
+    document.close()
+    return output.toByteArray()
+}
+
+private fun String.toCsvCell(): String {
+    val escaped = replace("\"", "\"\"")
+    return "\"$escaped\""
+}
+
+private fun String.toFileNamePart(): String {
+    return lowercase()
+        .replace(Regex("""[^a-z0-9]+"""), "-")
+        .trim('-')
+        .ifBlank { "workplace" }
+}
+
+private fun ExportOptions.isEnabled(option: ExportOption): Boolean {
+    return when (option) {
+        ExportOption.WORKPLACE_SETTINGS -> includeWorkplaceSettings
+        ExportOption.REPORT_SUMMARIES -> includeReportSummaries
+        ExportOption.OVERTIME_BALANCE -> includeOvertimeBalance
+        ExportOption.EARNINGS -> includeEarnings
+        ExportOption.SESSIONS -> includeSessions
+        ExportOption.ABSENCES -> includeAbsences
+        ExportOption.NOTES -> includeNotes
+    }
+}
+
+private fun resolveExportPeriod(state: TimeClockUiState): ExportPeriod {
+    val today = LocalDate.now()
+    if (state.exportRangeMode == ExportRangeMode.ALL_REGISTERED) {
+        return ExportPeriod(
+            label = ExportRangeMode.ALL_REGISTERED.label,
+            startDate = state.activeProfile.trackingStartDate,
+            endDate = today,
+        )
+    }
+
+    val parsedStart = runCatching { LocalDate.parse(state.exportStartDateInput) }.getOrNull()
+    val parsedEnd = runCatching { LocalDate.parse(state.exportEndDateInput) }.getOrNull()
+    val startDate = parsedStart ?: today
+    val endDate = parsedEnd ?: startDate
+    val safeEndDate = if (endDate.isBefore(startDate)) startDate else endDate
+
+    return ExportPeriod(
+        label = ExportRangeMode.CUSTOM.label,
+        startDate = startDate,
+        endDate = safeEndDate,
+    )
+}
+
+private fun exportPeriodError(
+    mode: ExportRangeMode,
+    startInput: String,
+    endInput: String,
+): String? {
+    if (mode == ExportRangeMode.ALL_REGISTERED) return null
+    val startDate = runCatching { LocalDate.parse(startInput) }.getOrNull()
+    val endDate = runCatching { LocalDate.parse(endInput) }.getOrNull()
+
+    return when {
+        startDate == null || endDate == null -> "Use dates like YYYY-MM-DD."
+        endDate.isBefore(startDate) -> "End date must be after start date."
+        else -> null
+    }
+}
+
+private fun WorkSession.overlapsExportPeriod(
+    period: ExportPeriod,
+    zoneId: ZoneId,
+): Boolean {
+    val rangeStart = period.startDate.atStartOfDay(zoneId).toInstant()
+    val rangeEnd = period.endDate.plusDays(1).atStartOfDay(zoneId).toInstant()
+    return clockOut > rangeStart && clockIn < rangeEnd
+}
+
+private fun LocalDate.isInExportPeriod(period: ExportPeriod): Boolean {
+    return !isBefore(period.startDate) && !isAfter(period.endDate)
+}
+
 private fun Duration.toHoursDecimal(): Double {
     return toMinutes().coerceAtLeast(0).toDouble() / 60.0
 }
@@ -3862,9 +4719,15 @@ private fun buildReports(state: TimeClockUiState): List<WorkReport> {
 }
 
 private fun buildEarningsRows(state: TimeClockUiState): List<EarningsRow> {
+    return buildEarningsRowsForReports(state, buildReports(state))
+}
+
+private fun buildEarningsRowsForReports(
+    state: TimeClockUiState,
+    reports: List<WorkReport>,
+): List<EarningsRow> {
     if (state.workplaceType == WorkplaceType.TIME_TRACKING_ONLY) return emptyList()
 
-    val reports = buildReports(state)
     return when (state.workplaceType) {
         WorkplaceType.HOURLY_PAID -> {
             val hourlyRate = state.hourlyRateInput.toMoneyOrNull() ?: return emptyList()
@@ -4399,6 +5262,15 @@ private fun ClockedOutPreview() {
             onOvertimeStartDateChange = {},
             onStartingOvertimeBalanceChange = {},
             onOvertimeRangeChange = {},
+            onShareCsvText = {},
+            onShareCsvFile = {},
+            onSaveCsv = {},
+            onSharePdf = {},
+            onSavePdf = {},
+            onExportOptionToggle = {},
+            onExportRangeModeSelect = {},
+            onExportStartDateChange = {},
+            onExportEndDateChange = {},
             onClockInReminderToggle = {},
             onClockInReminderTimeChange = {},
             onClockOutReminderToggle = {},
@@ -4469,6 +5341,15 @@ private fun ClockedInPreview() {
             onOvertimeStartDateChange = {},
             onStartingOvertimeBalanceChange = {},
             onOvertimeRangeChange = {},
+            onShareCsvText = {},
+            onShareCsvFile = {},
+            onSaveCsv = {},
+            onSharePdf = {},
+            onSavePdf = {},
+            onExportOptionToggle = {},
+            onExportRangeModeSelect = {},
+            onExportStartDateChange = {},
+            onExportEndDateChange = {},
             onClockInReminderToggle = {},
             onClockInReminderTimeChange = {},
             onClockOutReminderToggle = {},
