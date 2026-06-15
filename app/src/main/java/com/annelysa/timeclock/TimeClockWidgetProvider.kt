@@ -39,6 +39,8 @@ class TimeClockTodayWidgetProvider : AppWidgetProvider() {
         when (intent.action) {
             ACTION_WIDGET_CLOCK_IN -> clockInFromWidget(context, intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID))
             ACTION_WIDGET_CLOCK_OUT -> clockOutFromWidget(context, intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID))
+            ACTION_WIDGET_ADJUST_BACK -> adjustWidgetTime(context, intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID), -WIDGET_QUICK_ADJUST_MINUTES)
+            ACTION_WIDGET_ADJUST_FORWARD -> adjustWidgetTime(context, intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID), WIDGET_QUICK_ADJUST_MINUTES)
         }
         updateTimeClockWidgets(context)
     }
@@ -173,6 +175,9 @@ private fun buildTodayWidget(context: Context, appWidgetId: Int): RemoteViews {
         setTextViewText(R.id.widget_clock_action, if (isClockedIn) "Clock out" else "Clock in")
         setTextViewText(R.id.widget_today_total, "${formatWidgetDuration(snapshot.todayWorkedDuration)} today")
         setTextViewText(R.id.widget_timer_fallback, snapshot.activeDurationLabel)
+        setTextViewText(R.id.widget_correction_label, if (isClockedIn) "Adjust start" else "Adjust last out")
+        setViewVisibility(R.id.widget_correction_label, if (isClockedIn || snapshot.hasCompletedSession) View.VISIBLE else View.GONE)
+        setViewVisibility(R.id.widget_correction_row, if (isClockedIn || snapshot.hasCompletedSession) View.VISIBLE else View.GONE)
         setViewVisibility(R.id.widget_active_timer, if (isClockedIn) View.VISIBLE else View.GONE)
         setViewVisibility(R.id.widget_timer_fallback, if (isClockedIn) View.GONE else View.VISIBLE)
         if (isClockedIn) {
@@ -189,6 +194,8 @@ private fun buildTodayWidget(context: Context, appWidgetId: Int): RemoteViews {
             if (isClockedIn) R.drawable.widget_button_background_red else R.drawable.widget_button_background,
         )
         setOnClickPendingIntent(R.id.widget_clock_button_container, widgetActionPendingIntent(context, buttonAction, appWidgetId))
+        setOnClickPendingIntent(R.id.widget_correction_minus, widgetActionPendingIntent(context, ACTION_WIDGET_ADJUST_BACK, appWidgetId))
+        setOnClickPendingIntent(R.id.widget_correction_plus, widgetActionPendingIntent(context, ACTION_WIDGET_ADJUST_FORWARD, appWidgetId))
     }
 }
 
@@ -217,22 +224,7 @@ private fun clockInFromWidget(context: Context, appWidgetId: Int) {
         .remove(WIDGET_KEY_ACTIVE_CLOCK_IN)
         .apply()
 
-    if (preferences.getBoolean(widgetProfileKey(profileId, WIDGET_KEY_CLOCK_OUT_REMINDER_ENABLED), false)) {
-        val profile = decodeWidgetProfiles(preferences.getString(WIDGET_KEY_WORK_PROFILES, null))
-            .firstOrNull { it.id == profileId }
-            ?: DEFAULT_WIDGET_PROFILE
-        scheduleLongSessionReminders(
-            context = context,
-            profileId = profileId,
-            clockInMillis = clockInMillis,
-            expectedDuration = expectedWidgetDurationForRange(
-                startDate = LocalDate.now(),
-                endDate = LocalDate.now(),
-                preferences = preferences,
-                profile = profile,
-            ),
-        )
-    }
+    scheduleWidgetLongSessionReminderIfNeeded(context, preferences, profileId, clockInMillis)
 }
 
 private fun clockOutFromWidget(context: Context, appWidgetId: Int) {
@@ -262,6 +254,76 @@ private fun clockOutFromWidget(context: Context, appWidgetId: Int) {
         profileId = profileId,
         clockInMillis = clockInMillis,
     )
+}
+
+private fun scheduleWidgetLongSessionReminderIfNeeded(
+    context: Context,
+    preferences: SharedPreferences,
+    profileId: String,
+    clockInMillis: Long,
+) {
+    if (!preferences.getBoolean(widgetProfileKey(profileId, WIDGET_KEY_CLOCK_OUT_REMINDER_ENABLED), false)) return
+
+    val profile = decodeWidgetProfiles(preferences.getString(WIDGET_KEY_WORK_PROFILES, null))
+        .firstOrNull { it.id == profileId }
+        ?: DEFAULT_WIDGET_PROFILE
+    scheduleLongSessionReminders(
+        context = context,
+        profileId = profileId,
+        clockInMillis = clockInMillis,
+        expectedDuration = expectedWidgetDurationForRange(
+            startDate = LocalDate.now(),
+            endDate = LocalDate.now(),
+            preferences = preferences,
+            profile = profile,
+        ),
+    )
+}
+
+private fun adjustWidgetTime(context: Context, appWidgetId: Int, offsetMinutes: Long) {
+    val preferences = context.getSharedPreferences(WIDGET_PREFS_NAME, Context.MODE_PRIVATE)
+    val profileId = widgetProfileId(preferences, appWidgetId)
+    val activeKey = widgetProfileKey(profileId, WIDGET_KEY_ACTIVE_CLOCK_IN)
+    val offsetMillis = Duration.ofMinutes(offsetMinutes).toMillis()
+    val activeClockInMillis = preferences.getLongOrNull(activeKey)
+
+    if (activeClockInMillis != null) {
+        val newClockInMillis = activeClockInMillis + offsetMillis
+        val nowMillis = Instant.now().toEpochMilli()
+        if (newClockInMillis >= nowMillis) return
+
+        preferences.edit()
+            .putLong(activeKey, newClockInMillis)
+            .remove(widgetProfileKey(profileId, WIDGET_KEY_CLOCK_OUT_REMINDER_SENT_MASK))
+            .apply()
+
+        cancelLongSessionReminders(
+            context = context,
+            profileId = profileId,
+            clockInMillis = activeClockInMillis,
+        )
+        scheduleWidgetLongSessionReminderIfNeeded(context, preferences, profileId, newClockInMillis)
+        return
+    }
+
+    val sessionsKey = widgetProfileKey(profileId, WIDGET_KEY_COMPLETED_SESSIONS)
+    val sessions = decodeWidgetSessions(preferences.getString(sessionsKey, null))
+    val latestSession = sessions.maxByOrNull { it.clockOutMillis } ?: return
+    val newClockOutMillis = latestSession.clockOutMillis + offsetMillis
+    val nowMillis = Instant.now().toEpochMilli()
+    if (newClockOutMillis <= latestSession.clockInMillis || newClockOutMillis > nowMillis) return
+
+    val updatedSessions = sessions.map { session ->
+        if (session.clockInMillis == latestSession.clockInMillis && session.clockOutMillis == latestSession.clockOutMillis) {
+            session.copy(clockOutMillis = newClockOutMillis)
+        } else {
+            session
+        }
+    }.sortedBy { it.clockInMillis }
+
+    preferences.edit()
+        .putString(sessionsKey, encodeWidgetSessions(updatedSessions))
+        .apply()
 }
 
 private fun loadWidgetSnapshot(context: Context, appWidgetId: Int): WidgetSnapshot {
@@ -317,6 +379,7 @@ private fun loadWidgetSnapshot(context: Context, appWidgetId: Int): WidgetSnapsh
         activeDuration = activeSession?.durationInRange(today, today, zoneId) ?: Duration.ZERO,
         activeDurationLabel = activeSession?.durationInRange(today, today, zoneId)?.let(::formatWidgetDurationWithSeconds) ?: "00:00:00",
         todayWorkedDuration = todayWorkedDuration,
+        hasCompletedSession = sessions.isNotEmpty(),
         timeLeftLabel = when {
             expectedTodayDuration <= Duration.ZERO -> "No target today"
             remainingDuration.isNegative || remainingDuration == Duration.ZERO -> "${formatWidgetDuration(remainingDuration.abs())} ahead"
@@ -417,6 +480,12 @@ private fun decodeWidgetSessions(encoded: String?): List<WidgetSession> {
         }
         ?.toList()
         .orEmpty()
+}
+
+private fun encodeWidgetSessions(sessions: List<WidgetSession>): String {
+    return sessions.joinToString(separator = "\n") { session ->
+        "${session.clockInMillis},${session.clockOutMillis}"
+    }
 }
 
 private fun decodeWidgetAbsences(encoded: String?): List<WidgetAbsence> {
@@ -571,10 +640,20 @@ private fun widgetActionPendingIntent(context: Context, action: String, appWidge
     }
     return PendingIntent.getBroadcast(
         context,
-        appWidgetId * 10 + if (action == ACTION_WIDGET_CLOCK_IN) WIDGET_CLOCK_IN_REQUEST_CODE else WIDGET_CLOCK_OUT_REQUEST_CODE,
+        appWidgetId * 10 + widgetRequestCodeForAction(action),
         intent,
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
+}
+
+private fun widgetRequestCodeForAction(action: String): Int {
+    return when (action) {
+        ACTION_WIDGET_CLOCK_IN -> WIDGET_CLOCK_IN_REQUEST_CODE
+        ACTION_WIDGET_CLOCK_OUT -> WIDGET_CLOCK_OUT_REQUEST_CODE
+        ACTION_WIDGET_ADJUST_BACK -> WIDGET_ADJUST_BACK_REQUEST_CODE
+        ACTION_WIDGET_ADJUST_FORWARD -> WIDGET_ADJUST_FORWARD_REQUEST_CODE
+        else -> WIDGET_OPEN_APP_REQUEST_CODE_TODAY
+    }
 }
 
 private fun openAppPendingIntent(context: Context, requestCode: Int): PendingIntent {
@@ -598,6 +677,7 @@ private data class WidgetSnapshot(
     val activeDuration: Duration,
     val activeDurationLabel: String,
     val todayWorkedDuration: Duration,
+    val hasCompletedSession: Boolean,
     val timeLeftLabel: String,
     val progressPercent: Int,
     val overtimeRangeLabel: String,
@@ -657,6 +737,8 @@ private enum class WidgetOvertimeRange(val label: String) {
 
 private const val ACTION_WIDGET_CLOCK_IN = "com.annelysa.timeclock.action.WIDGET_CLOCK_IN"
 private const val ACTION_WIDGET_CLOCK_OUT = "com.annelysa.timeclock.action.WIDGET_CLOCK_OUT"
+private const val ACTION_WIDGET_ADJUST_BACK = "com.annelysa.timeclock.action.WIDGET_ADJUST_BACK"
+private const val ACTION_WIDGET_ADJUST_FORWARD = "com.annelysa.timeclock.action.WIDGET_ADJUST_FORWARD"
 private const val WIDGET_PREFS_NAME = "time_clock_preferences"
 private const val WIDGET_KEY_WORK_PROFILES = "work_profiles"
 private const val WIDGET_KEY_ACTIVE_PROFILE_ID = "active_profile_id"
@@ -681,6 +763,9 @@ private const val WIDGET_CLOCK_IN_REQUEST_CODE = 2101
 private const val WIDGET_CLOCK_OUT_REQUEST_CODE = 2102
 private const val WIDGET_OPEN_APP_REQUEST_CODE_TODAY = 2103
 private const val WIDGET_OPEN_APP_REQUEST_CODE_BALANCE = 2104
+private const val WIDGET_ADJUST_BACK_REQUEST_CODE = 2105
+private const val WIDGET_ADJUST_FORWARD_REQUEST_CODE = 2106
+private const val WIDGET_QUICK_ADJUST_MINUTES = 5L
 private val DEFAULT_WIDGET_DAILY_DURATION: Duration = Duration.ofHours(7).plusMinutes(30)
 private val DEFAULT_WIDGET_WORK_DAYS = setOf(
     DayOfWeek.MONDAY,

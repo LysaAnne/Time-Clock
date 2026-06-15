@@ -22,6 +22,7 @@ import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -83,7 +84,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.content.FileProvider
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -102,6 +102,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+    private val timeClockViewModel: TimeClockViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         createReminderNotificationChannel()
@@ -109,7 +111,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             TimeClockTheme {
-                val viewModel: TimeClockViewModel = viewModel()
+                val viewModel = timeClockViewModel
                 val state by viewModel.uiState.collectAsState()
 
                 TimeClockScreen(
@@ -117,6 +119,12 @@ class MainActivity : ComponentActivity() {
                     onTabSelect = viewModel::selectTab,
                     onClockIn = viewModel::clockIn,
                     onClockOut = viewModel::clockOut,
+                    onActiveClockInChange = viewModel::updateActiveClockInEditInput,
+                    onActiveClockInSave = viewModel::saveActiveClockInTime,
+                    onRecentClockOutChange = viewModel::updateRecentClockOutEditInput,
+                    onRecentClockOutSave = viewModel::saveRecentClockOutTime,
+                    onInsightsSectionSelect = viewModel::selectInsightsSection,
+                    onExportExpandToggle = viewModel::toggleExportExpanded,
                     onProfileSelect = viewModel::selectProfile,
                     onProfileNameChange = viewModel::updateActiveProfileName,
                     onProfileStartDateChange = viewModel::updateActiveProfileStartDate,
@@ -166,6 +174,11 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        timeClockViewModel.refreshFromStorage()
     }
 
     private fun shareCsvTextExport(state: TimeClockUiState) {
@@ -307,6 +320,10 @@ data class TimeClockUiState(
     val isClockedIn: Boolean = false,
     val clockInTime: Instant? = null,
     val activeDuration: Duration = Duration.ZERO,
+    val activeClockInEditInput: String = "",
+    val activeClockInEditError: String? = null,
+    val recentClockOutEditInput: String = "",
+    val recentClockOutEditError: String? = null,
     val todayTotalDuration: Duration = Duration.ZERO,
     val todayCreditedDuration: Duration = Duration.ZERO,
     val todayBreakDeduction: Duration = Duration.ZERO,
@@ -349,6 +366,8 @@ data class TimeClockUiState(
     val clockOutReminderEnabled: Boolean = false,
     val clockOutReminderSentMask: Int = 0,
     val reminderSettingsError: String? = null,
+    val selectedInsightsSection: InsightsSection = InsightsSection.SUMMARY,
+    val isExportExpanded: Boolean = false,
     val exportOptions: ExportOptions = ExportOptions(),
     val exportRangeMode: ExportRangeMode = ExportRangeMode.ALL_REGISTERED,
     val exportStartDateInput: String = formatDateInput(LocalDate.now()),
@@ -534,6 +553,12 @@ enum class AppTab(
     SETTINGS("Settings", Icons.Default.Settings),
 }
 
+enum class InsightsSection(val label: String) {
+    SUMMARY("Summary"),
+    CHARTS("Charts"),
+    EXPORT("Export"),
+}
+
 class TimeClockViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val _uiState = MutableStateFlow(loadInitialState())
@@ -551,6 +576,53 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun selectTab(tab: AppTab) {
         _uiState.value = _uiState.value.copy(selectedTab = tab)
+    }
+
+    fun selectInsightsSection(section: InsightsSection) {
+        _uiState.value = _uiState.value.copy(selectedInsightsSection = section)
+    }
+
+    fun toggleExportExpanded() {
+        _uiState.value = _uiState.value.copy(isExportExpanded = !_uiState.value.isExportExpanded)
+    }
+
+    fun refreshFromStorage() {
+        val state = _uiState.value
+        val activeClockIn = preferences.getLongOrNull(profileKey(state.activeProfileId, KEY_ACTIVE_CLOCK_IN))
+            .let { activeProfileClockIn ->
+                activeProfileClockIn ?: if (state.activeProfileId == DEFAULT_WORK_PROFILE_ID) {
+                    preferences.getLongOrNull(KEY_ACTIVE_CLOCK_IN)
+                } else {
+                    null
+                }
+            }
+            ?.let(Instant::ofEpochMilli)
+        val completedSessions = loadCompletedSessions(state.activeProfileId)
+        val lastCompletedSession = completedSessions.maxByOrNull { it.clockOut }
+        val refreshedState = withDailySummary(
+            state.copy(
+                isClockedIn = activeClockIn != null,
+                clockInTime = activeClockIn,
+                activeDuration = activeClockIn?.let {
+                    Duration.between(it, Instant.now()).coerceAtLeast(Duration.ZERO)
+                } ?: Duration.ZERO,
+                activeClockInEditInput = activeClockIn?.let(::formatTimeInput).orEmpty(),
+                activeClockInEditError = null,
+                recentClockOutEditInput = if (activeClockIn == null) {
+                    lastCompletedSession?.clockOut?.let(::formatTimeInput).orEmpty()
+                } else {
+                    state.recentClockOutEditInput
+                },
+                recentClockOutEditError = null,
+                completedSessions = completedSessions,
+                lastCompletedSession = lastCompletedSession,
+                clockOutReminderSentMask = preferences.getInt(
+                    profileKey(state.activeProfileId, KEY_CLOCK_OUT_REMINDER_SENT_MASK),
+                    0,
+                ),
+            ),
+        )
+        _uiState.value = refreshedState
     }
 
     fun selectProfile(profileId: String) {
@@ -774,6 +846,9 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 isClockedIn = true,
                 clockInTime = now,
                 activeDuration = Duration.ZERO,
+                activeClockInEditInput = formatTimeInput(now),
+                activeClockInEditError = null,
+                recentClockOutEditError = null,
             ),
         )
         _uiState.value = clockedInState
@@ -805,11 +880,112 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 isClockedIn = false,
                 clockInTime = null,
                 activeDuration = Duration.ZERO,
+                activeClockInEditInput = "",
+                activeClockInEditError = null,
+                recentClockOutEditInput = formatTimeInput(endedAt),
+                recentClockOutEditError = null,
                 todayLastClockOut = endedAt,
                 lastCompletedSession = session,
                 completedSessions = completedSessions,
             ),
         )
+    }
+
+    fun updateActiveClockInEditInput(input: String) {
+        _uiState.value = _uiState.value.copy(
+            activeClockInEditInput = sanitizeTimeInput(input),
+            activeClockInEditError = null,
+        )
+    }
+
+    fun saveActiveClockInTime() {
+        val state = _uiState.value
+        val currentClockIn = state.clockInTime ?: return
+        val clockInTime = parseTimeInput(state.activeClockInEditInput)
+        if (clockInTime == null) {
+            _uiState.value = state.copy(activeClockInEditError = "Use a time like 09:00.")
+            return
+        }
+
+        val zoneId = ZoneId.systemDefault()
+        val newClockIn = LocalDate.now(zoneId).atTime(clockInTime).atZone(zoneId).toInstant()
+        val now = Instant.now()
+        if (!newClockIn.isBefore(now)) {
+            _uiState.value = state.copy(activeClockInEditError = "Clock in must be before now.")
+            return
+        }
+
+        preferences.edit()
+            .putLong(profileKey(KEY_ACTIVE_CLOCK_IN), newClockIn.toEpochMilli())
+            .remove(profileKey(KEY_CLOCK_OUT_REMINDER_SENT_MASK))
+            .apply()
+        cancelLongSessionReminders(
+            context = getApplication<Application>(),
+            profileId = state.activeProfileId,
+            clockInMillis = currentClockIn.toEpochMilli(),
+        )
+
+        val updatedState = withDailySummary(
+            state.copy(
+                clockInTime = newClockIn,
+                activeDuration = Duration.between(newClockIn, now).coerceAtLeast(Duration.ZERO),
+                activeClockInEditInput = formatTimeInput(newClockIn),
+                activeClockInEditError = null,
+                clockOutReminderSentMask = 0,
+            ),
+        )
+        _uiState.value = updatedState
+        rescheduleLongSessionReminders(updatedState)
+        refreshHomeScreenWidgets()
+    }
+
+    fun updateRecentClockOutEditInput(input: String) {
+        _uiState.value = _uiState.value.copy(
+            recentClockOutEditInput = sanitizeTimeInput(input),
+            recentClockOutEditError = null,
+        )
+    }
+
+    fun saveRecentClockOutTime() {
+        val state = _uiState.value
+        val session = state.lastCompletedSession ?: return
+        val clockOutTime = parseTimeInput(state.recentClockOutEditInput)
+        if (clockOutTime == null) {
+            _uiState.value = state.copy(recentClockOutEditError = "Use a time like 17:00.")
+            return
+        }
+
+        val zoneId = ZoneId.systemDefault()
+        val clockOutDate = session.clockOut.atZone(zoneId).toLocalDate()
+        val newClockOut = clockOutDate.atTime(clockOutTime).atZone(zoneId).toInstant()
+        if (!newClockOut.isAfter(session.clockIn)) {
+            _uiState.value = state.copy(recentClockOutEditError = "Clock out must be after clock in.")
+            return
+        }
+        if (newClockOut.isAfter(Instant.now())) {
+            _uiState.value = state.copy(recentClockOutEditError = "Clock out cannot be in the future.")
+            return
+        }
+
+        val updatedSession = session.copy(clockOut = newClockOut)
+        val completedSessions = state.completedSessions.map { existingSession ->
+            if (existingSession.clockIn == session.clockIn && existingSession.clockOut == session.clockOut) {
+                updatedSession
+            } else {
+                existingSession
+            }
+        }.sortedBy { it.clockIn }
+
+        saveCompletedSessions(completedSessions)
+        _uiState.value = withDailySummary(
+            state.copy(
+                completedSessions = completedSessions,
+                lastCompletedSession = updatedSession,
+                recentClockOutEditInput = formatTimeInput(newClockOut),
+                recentClockOutEditError = null,
+            ),
+        )
+        refreshHomeScreenWidgets()
     }
 
     fun updateManualDate(input: String) {
@@ -1439,6 +1615,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             key = KEY_CURRENCY,
             defaultValue = DEFAULT_CURRENCY_INPUT,
         ) ?: DEFAULT_CURRENCY_INPUT
+        val lastCompletedSession = completedSessions.maxByOrNull { it.clockOut }
 
         return withDailySummary(
             TimeClockUiState(
@@ -1457,6 +1634,8 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 activeDuration = activeClockIn?.let {
                     Duration.between(it, Instant.now()).coerceAtLeast(Duration.ZERO)
                 } ?: Duration.ZERO,
+                activeClockInEditInput = activeClockIn?.let(::formatTimeInput).orEmpty(),
+                recentClockOutEditInput = lastCompletedSession?.clockOut?.let(::formatTimeInput).orEmpty(),
                 expectedDailyHoursInput = formatDurationInput(expectedWeeklyDuration.dividedByWorkdays(workDays.size)),
                 expectedDailyDuration = expectedWeeklyDuration.dividedByWorkdays(workDays.size),
                 expectedWeeklyHoursInput = expectedWeeklyHours,
@@ -1465,7 +1644,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 deductUnpaidLunchBreak = deductUnpaidLunchBreak,
                 lunchBreakMinutesInput = lunchBreakMinutesInput,
                 lunchBreakDuration = lunchBreakDuration,
-                lastCompletedSession = completedSessions.maxByOrNull { it.clockOut },
+                lastCompletedSession = lastCompletedSession,
                 completedSessions = completedSessions,
                 absences = absences,
                 overtimeStartDateInput = overtimeStartDateInput,
@@ -2085,6 +2264,12 @@ fun TimeClockScreen(
     onTabSelect: (AppTab) -> Unit,
     onClockIn: () -> Unit,
     onClockOut: () -> Unit,
+    onActiveClockInChange: (String) -> Unit,
+    onActiveClockInSave: () -> Unit,
+    onRecentClockOutChange: (String) -> Unit,
+    onRecentClockOutSave: () -> Unit,
+    onInsightsSectionSelect: (InsightsSection) -> Unit,
+    onExportExpandToggle: () -> Unit,
     onProfileSelect: (String) -> Unit,
     onProfileNameChange: (String) -> Unit,
     onProfileStartDateChange: (String) -> Unit,
@@ -2180,6 +2365,10 @@ fun TimeClockScreen(
                     state = state,
                     onClockIn = onClockIn,
                     onClockOut = onClockOut,
+                    onActiveClockInChange = onActiveClockInChange,
+                    onActiveClockInSave = onActiveClockInSave,
+                    onRecentClockOutChange = onRecentClockOutChange,
+                    onRecentClockOutSave = onRecentClockOutSave,
                 )
                 AppTab.HISTORY -> HistoryTab(
                     state = state,
@@ -2201,6 +2390,7 @@ fun TimeClockScreen(
                 )
                 AppTab.INSIGHTS -> InsightsTab(
                     state = state,
+                    onInsightsSectionSelect = onInsightsSectionSelect,
                     onOvertimeRangeChange = onOvertimeRangeChange,
                     onShareCsvText = onShareCsvText,
                     onShareCsvFile = onShareCsvFile,
@@ -2211,6 +2401,7 @@ fun TimeClockScreen(
                     onExportRangeModeSelect = onExportRangeModeSelect,
                     onExportStartDateChange = onExportStartDateChange,
                     onExportEndDateChange = onExportEndDateChange,
+                    onExportExpandToggle = onExportExpandToggle,
                 )
                 AppTab.SETTINGS -> SettingsTab(
                     state = state,
@@ -2267,6 +2458,10 @@ private fun TodayTab(
     state: TimeClockUiState,
     onClockIn: () -> Unit,
     onClockOut: () -> Unit,
+    onActiveClockInChange: (String) -> Unit,
+    onActiveClockInSave: () -> Unit,
+    onRecentClockOutChange: (String) -> Unit,
+    onRecentClockOutSave: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -2279,9 +2474,15 @@ private fun TodayTab(
             onClockOut = onClockOut,
         )
         ActiveTimerBlock(state = state)
+        QuickTimeCorrectionCard(
+            state = state,
+            onActiveClockInChange = onActiveClockInChange,
+            onActiveClockInSave = onActiveClockInSave,
+            onRecentClockOutChange = onRecentClockOutChange,
+            onRecentClockOutSave = onRecentClockOutSave,
+        )
         DailySummaryCard(state = state)
         OvertimePreviewCard(state = state)
-        LastSessionCard(session = state.lastCompletedSession)
     }
 }
 
@@ -2338,6 +2539,7 @@ private fun HistoryTab(
 @Composable
 private fun InsightsTab(
     state: TimeClockUiState,
+    onInsightsSectionSelect: (InsightsSection) -> Unit,
     onOvertimeRangeChange: (OvertimeRange) -> Unit,
     onShareCsvText: () -> Unit,
     onShareCsvFile: () -> Unit,
@@ -2348,30 +2550,66 @@ private fun InsightsTab(
     onExportRangeModeSelect: (ExportRangeMode) -> Unit,
     onExportStartDateChange: (String) -> Unit,
     onExportEndDateChange: (String) -> Unit,
+    onExportExpandToggle: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        ReportsCard(state = state)
-        EarningsCard(state = state)
-        ChartsCard(state = state)
-        OvertimeBalanceCard(
-            state = state,
-            onOvertimeRangeChange = onOvertimeRangeChange,
+        InsightsSectionSelector(
+            selectedSection = state.selectedInsightsSection,
+            onSectionSelect = onInsightsSectionSelect,
         )
-        ExportCard(
-            state = state,
-            onShareCsvText = onShareCsvText,
-            onShareCsvFile = onShareCsvFile,
-            onSaveCsv = onSaveCsv,
-            onSharePdf = onSharePdf,
-            onSavePdf = onSavePdf,
-            onExportOptionToggle = onExportOptionToggle,
-            onExportRangeModeSelect = onExportRangeModeSelect,
-            onExportStartDateChange = onExportStartDateChange,
-            onExportEndDateChange = onExportEndDateChange,
-        )
+        when (state.selectedInsightsSection) {
+            InsightsSection.SUMMARY -> {
+                ReportsCard(state = state)
+                EarningsCard(state = state)
+                OvertimeBalanceCard(
+                    state = state,
+                    onOvertimeRangeChange = onOvertimeRangeChange,
+                )
+            }
+            InsightsSection.CHARTS -> ChartsCard(state = state)
+            InsightsSection.EXPORT -> ExportCard(
+                state = state,
+                onShareCsvText = onShareCsvText,
+                onShareCsvFile = onShareCsvFile,
+                onSaveCsv = onSaveCsv,
+                onSharePdf = onSharePdf,
+                onSavePdf = onSavePdf,
+                onExportOptionToggle = onExportOptionToggle,
+                onExportRangeModeSelect = onExportRangeModeSelect,
+                onExportStartDateChange = onExportStartDateChange,
+                onExportEndDateChange = onExportEndDateChange,
+                onExpandToggle = onExportExpandToggle,
+            )
+        }
+    }
+}
+
+@Composable
+private fun InsightsSectionSelector(
+    selectedSection: InsightsSection,
+    onSectionSelect: (InsightsSection) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        InsightsSection.entries.forEach { section ->
+            FilterChip(
+                selected = section == selectedSection,
+                onClick = { onSectionSelect(section) },
+                label = {
+                    Text(
+                        text = section.label,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                },
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
 
@@ -2516,12 +2754,100 @@ private fun ActiveTimerBlock(state: TimeClockUiState) {
 }
 
 @Composable
+private fun QuickTimeCorrectionCard(
+    state: TimeClockUiState,
+    onActiveClockInChange: (String) -> Unit,
+    onActiveClockInSave: () -> Unit,
+    onRecentClockOutChange: (String) -> Unit,
+    onRecentClockOutSave: () -> Unit,
+) {
+    if (!state.isClockedIn && state.lastCompletedSession == null) return
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "Quick correction",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (state.isClockedIn) {
+                Text(
+                    text = "Change the start time for this active session.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = state.activeClockInEditInput,
+                        onValueChange = onActiveClockInChange,
+                        modifier = Modifier.weight(1f),
+                        label = { Text("Clock in") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                    )
+                    Button(onClick = onActiveClockInSave) {
+                        Text(text = "Save")
+                    }
+                }
+                state.activeClockInEditError?.let { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFFB42318),
+                    )
+                }
+            } else {
+                Text(
+                    text = "Adjust the clock-out time for the session you just finished.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = state.recentClockOutEditInput,
+                        onValueChange = onRecentClockOutChange,
+                        modifier = Modifier.weight(1f),
+                        label = { Text("Clock out") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                    )
+                    Button(onClick = onRecentClockOutSave) {
+                        Text(text = "Save")
+                    }
+                }
+                state.recentClockOutEditError?.let { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFFB42318),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun OvertimePreviewCard(state: TimeClockUiState) {
     val balance = buildOvertimeBalance(state)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F4FF)),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
         Row(
             modifier = Modifier
@@ -2572,7 +2898,7 @@ private fun WorkProfileCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF6FF)),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -2821,7 +3147,7 @@ private fun WorkHoursSettingsCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFCF5)),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -2934,7 +3260,7 @@ private fun ReminderSettingsCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F4FF)),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3037,7 +3363,7 @@ private fun WorkdayChip(
 private fun LastSessionCard(session: WorkSession?) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF6F4)),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3084,7 +3410,7 @@ private fun ManualEntryCard(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F7FF)),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3160,7 +3486,7 @@ private fun AbsenceEntryCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7ED)),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3269,7 +3595,7 @@ private fun ReportsCard(state: TimeClockUiState) {
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF6FBF9)),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3293,7 +3619,7 @@ private fun EarningsCard(state: TimeClockUiState) {
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3374,10 +3700,11 @@ private fun ExportCard(
     onExportRangeModeSelect: (ExportRangeMode) -> Unit,
     onExportStartDateChange: (String) -> Unit,
     onExportEndDateChange: (String) -> Unit,
+    onExpandToggle: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F7FF)),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
         Column(
             modifier = Modifier
@@ -3385,16 +3712,31 @@ private fun ExportCard(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(
-                text = "Export",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = "Share reports for this workplace",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Export report",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = "Choose period, data, and format",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = onExpandToggle) {
+                    Icon(
+                        imageVector = if (state.isExportExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (state.isExportExpanded) "Collapse export" else "Expand export",
+                    )
+                }
+            }
+            if (!state.isExportExpanded) return@Column
             Text(
                 text = "Period",
                 style = MaterialTheme.typography.bodyLarge,
@@ -3607,7 +3949,7 @@ private fun ChartsCard(state: TimeClockUiState) {
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF4F8FF)),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3899,7 +4241,7 @@ private fun OvertimeBalanceCard(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F4FF)),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -5116,6 +5458,10 @@ private fun formatTime(instant: Instant): String {
     return TIME_FORMATTER.format(instant.atZone(ZoneId.systemDefault()))
 }
 
+private fun formatTimeInput(instant: Instant): String {
+    return TIME_INPUT_FORMATTER.format(instant.atZone(ZoneId.systemDefault()).toLocalTime())
+}
+
 private fun formatDateInput(date: LocalDate): String {
     return DATE_INPUT_FORMATTER.format(date)
 }
@@ -5209,6 +5555,7 @@ private fun ClockedOutPreview() {
                 deductUnpaidLunchBreak = true,
                 todayCreditedDuration = Duration.ofHours(5).plusMinutes(55),
                 todayBreakDeduction = Duration.ofMinutes(30),
+                recentClockOutEditInput = "16:40",
                 lastCompletedSession = WorkSession(
                     clockIn = Instant.now().minus(Duration.ofHours(3)),
                     clockOut = Instant.now().minus(Duration.ofMinutes(20)),
@@ -5228,6 +5575,12 @@ private fun ClockedOutPreview() {
             onTabSelect = {},
             onClockIn = {},
             onClockOut = {},
+            onActiveClockInChange = {},
+            onActiveClockInSave = {},
+            onRecentClockOutChange = {},
+            onRecentClockOutSave = {},
+            onInsightsSectionSelect = {},
+            onExportExpandToggle = {},
             onProfileSelect = {},
             onProfileNameChange = {},
             onProfileStartDateChange = {},
@@ -5287,6 +5640,7 @@ private fun ClockedInPreview() {
                 isClockedIn = true,
                 clockInTime = Instant.now().minus(Duration.ofMinutes(42)),
                 activeDuration = Duration.ofMinutes(42),
+                activeClockInEditInput = "08:45",
                 todayTotalDuration = Duration.ofHours(4).plusMinutes(42),
                 todaySessionCount = 2,
                 todayFirstClockIn = Instant.now().minus(Duration.ofHours(5)),
@@ -5307,6 +5661,12 @@ private fun ClockedInPreview() {
             onTabSelect = {},
             onClockIn = {},
             onClockOut = {},
+            onActiveClockInChange = {},
+            onActiveClockInSave = {},
+            onRecentClockOutChange = {},
+            onRecentClockOutSave = {},
+            onInsightsSectionSelect = {},
+            onExportExpandToggle = {},
             onProfileSelect = {},
             onProfileNameChange = {},
             onProfileStartDateChange = {},

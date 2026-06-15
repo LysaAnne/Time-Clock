@@ -675,7 +675,7 @@ Implemented:
 
 Small improvements that make everyday time tracking smoother.
 
-Status: **Planned**
+Status: **Implemented**
 
 Consider:
 
@@ -694,6 +694,17 @@ Recommended first version:
 - Validate that the new clock-in time is before now
 - After clock-out, show a short-lived or visible option to adjust the clock-out time
 - Save the corrected session and update today/history immediately
+
+Implemented:
+
+- Added a quick correction card on Today
+- While clocked in, the active clock-in time can be changed and the timer keeps running from the corrected time
+- Active clock-in edits update the stored active session, today totals, overtime, reminders, widgets, and reports
+- After clocking out, the latest session's clock-out time can be corrected without opening History
+- Recent clock-out edits update the saved session, today totals, history, widgets, exports, and reports
+- The clock-in widget has quick -5m/+5m correction buttons for the active clock-in time or latest clock-out time
+- Edits stay scoped to the active workplace profile
+- Validation prevents future active clock-in times and clock-out times before clock-in
 
 ### 18. Backup and Sync
 
