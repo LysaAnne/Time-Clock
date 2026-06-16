@@ -474,13 +474,12 @@ Goal:
 
 Consider:
 
-- Add vacation days
+- Add holiday days
 - Add sick days
-- Treat vacation and holiday as the same absence type
-- Add vacation/holiday date ranges with start and end dates
+- Treat vacation and holiday as the same absence type, using the British-English label `Holiday`
+- Add holiday date ranges with start and end dates
 - Let sickness be either one day or a date range
 - Add unpaid absence days
-- Add time off using overtime balance
 - Mark days as not expected work days
 - Choose whether an absence counts as paid expected hours or removes expected hours
 - Add half-day absence
@@ -492,27 +491,25 @@ Consider:
 Recommended first version:
 
 - Add absence entries for the active work profile
-- Support vacation/holiday, sick day, no-work day, and time off
+- Support holiday, sick day, and no-work day
 - Support full-day entries first
 - Remove expected hours for no-work/unpaid absence days
-- Count vacation/holiday and sick days as covered days so they do not create missing hours
+- Count holiday and sick days as covered days so they do not create missing hours
 - Show absence entries in History
 - Include absence adjustments in reports, charts, and overtime balance
 
 Implemented:
 
 - Profile-specific absence entries
-- Full-day vacation/holiday, sick day, and no-work entries
-- Vacation/holiday ranges with start and end dates
-- Sick-day entries can be one day or a date range
-- Time-off entries with hours/minutes, such as `2:00`
+- Full-day holiday, sick day, and no-work entries
+- Holiday, sick-day, and no-work entries can all be one day or a date range
 - Optional note on absence entries
-- Absence entry form in History
+- Absence entry form opened from the bottom plus button
 - Absence entries shown in History, including days with no work sessions
 - Delete absence entries from History
 - Expected hours skipped on absence days
-- Time-off entries do not remove expected hours, so they reduce overtime balance naturally when fewer hours are worked
 - Reports, charts, history, today summary, long-session reminders, and overtime balance respect absence days
+- Older saved `TIME_OFF` entries are read safely as `No work`
 
 Not implemented yet:
 
@@ -648,14 +645,14 @@ Consider:
 - Export monthly report as PDF
 - Share report by email
 - Include notes and edited entries
-- Include hours, overtime balance, absence entries, time off, workplace name, and earnings when available
+- Include hours, overtime balance, absence entries, workplace name, and earnings when available
 
 Implemented:
 
 - Export button in Insights
 - Choose all registered time or a specific start/end date period
 - Choose which data sections to include before exporting
-- Toggle workplace settings, report summaries, overtime balance, earnings, sessions, absences/time off, and notes
+- Toggle workplace settings, report summaries, overtime balance, earnings, sessions, absences, and notes
 - Share CSV data directly as text through the Android share sheet
 - Share CSV report as an attached `.csv` file through the Android share sheet
 - Save CSV report to Downloads
@@ -668,7 +665,7 @@ Implemented:
 - Includes selected overtime balance range and totals
 - Includes earnings estimates when available
 - Includes completed and active work sessions
-- Includes vacation/holiday, sick day, no-work, and time-off entries
+- Includes holiday, sick day, and no-work entries
 - Escapes CSV cells so notes and workplace names are spreadsheet-friendly
 
 ### 17. Small Fixes and Workflow Improvements
@@ -686,6 +683,8 @@ Consider:
 - Let the user correct the just-finished session without going into History first
 - Keep all edited active/just-finished sessions in the same workplace
 - Recalculate today total, overtime, reminders, widgets, and reports after these quick edits
+- Add notes to active and manual work sessions
+- Allow intentional future clock-out times with a warning
 
 Recommended first version:
 
@@ -694,6 +693,7 @@ Recommended first version:
 - Validate that the new clock-in time is before now
 - After clock-out, show a short-lived or visible option to adjust the clock-out time
 - Save the corrected session and update today/history immediately
+- Keep correction controls compact so Today stays focused on clocking in and out
 
 Implemented:
 
@@ -705,6 +705,11 @@ Implemented:
 - The clock-in widget has quick -5m/+5m correction buttons for the active clock-in time or latest clock-out time
 - Edits stay scoped to the active workplace profile
 - Validation prevents future active clock-in times and clock-out times before clock-in
+- Manual entries can include notes
+- Active sessions can include notes that are saved when clocking out
+- Session notes appear in History and exports
+- Manual entry and correction allow future clock-out times, but show a warning
+- Manual entry and absence saves give feedback and close only after successful save
 
 ### 18. Backup and Sync
 
@@ -744,6 +749,77 @@ Consider:
 - Clear error messages
 - Fast startup
 
+### 21. Quality, Review, and Reliability Pass
+
+Make the app feel trustworthy now that the core features are broad.
+
+Status: **Planned**
+
+Goal:
+
+- Reduce hidden bugs in calculations and data handling
+- Make the UI more consistent across Today, History, Insights, Settings, widgets, and exports
+- Make the app easier to test before using it for real work reports
+
+Consider:
+
+- Add automated tests for overtime, expected hours, unpaid lunch, absences, profile start/end dates, and export ranges
+- Add a few saved example scenarios for manual checking, such as part-time work, multiple workplaces, sick week, and consultant profile
+- Review all date-range calculations so start dates, end dates, and workplace end dates behave consistently
+- Add clearer empty states for History, Insights, exports, and widgets
+- Add a small data health/debug screen in Settings showing number of sessions, absences, profiles, and last backup status
+- Add confirmation or undo for destructive actions such as deleting sessions, absences, profiles, and exports
+- Add an onboarding checklist for first setup: workplace name, start date, expected weekly hours, workdays, lunch, reminders, and backup
+- Review wording consistency, such as `Holiday`, `Overtime Summary`, `Actual`, `Expected`, and `Balance`
+- Improve accessibility: larger tap targets, screen-reader labels, contrast checks, and readable text sizes
+- Add app version number and changelog screen
+- Add a safe migration path before moving from SharedPreferences to Room
+
+Recommended first version:
+
+- Add calculation tests for the most important overtime scenarios
+- Add undo/confirmation for delete actions
+- Add first-run setup checklist
+- Add clearer empty states and helper text where screens are currently blank
+- Add an in-app changelog or "What changed" section
+
+### Ad Hoc Improvements Summary
+
+This section tracks small improvements and corrections made outside the original feature roadmap. Future ad hoc UI or functionality fixes should be added here so the plan remains an accurate history of what changed.
+
+Implemented so far:
+
+- Moved the main clock in / clock out button to the top of Today so it is the first action when opening the app
+- Moved settings into their own Settings tab and removed unnecessary nested collapse controls
+- Replaced workplace buttons with a compact dropdown that stays visible at the top on every tab
+- Added workplace deletion and "I no longer work here" behavior with warning, end date, and reactivation
+- Added a centered bottom plus button for adding manual entries and absences
+- Changed manual entry and absence flows into popup dialogs
+- Added date pickers and time pickers so dates and times do not need to be typed manually
+- Added quick correction for active clock-in time and latest clock-out time
+- Made quick correction controls smaller on Today
+- Allowed manual entries and clock-out corrections to use future clock-out times with a warning
+- Added save feedback for manual entries and absences
+- Added notes for manual work sessions and active clock-in sessions
+- Show session notes in History and exports
+- Improved History spacing so individual sessions and absence entries are easier to scan
+- Moved session notes under the session time/date
+- Made Today's timer more visually prominent
+- Added a continuous Today progress bar showing worked progress toward the daily target
+- Simplified the Today Overtime Summary by using a dropdown period selector
+- Added custom date range and All time to Today Overtime Summary
+- Show the exact date range used by Today Overtime Summary
+- Removed duplicate overtime fields from Today Overtime Summary
+- Made positive overtime consistently green and negative overtime consistently red
+- Simplified absence types to `Holiday`, `Sick day`, and `No work`
+- Made all absence types support start and end dates
+- Removed the confusing `Time off` absence type
+- Renamed `Vacation / holiday` to `Holiday` for British-English wording
+- Added a warning before clocking in on a day with registered absence, while still allowing clock-in if needed
+- Added a warning before saving absence over days that already contain work sessions
+- Updated export wording from `absences/time off` to `absences`
+- Enabled Android Auto Backup so app data has system-level backup support
+
 ## Suggested Build Order
 
 Build the app in this order:
@@ -767,6 +843,7 @@ Build the app in this order:
 17. Add export
 18. Add small fixes and workflow improvements
 19. Add backup
+20. Add quality, review, and reliability pass
 
 ## First Feature To Build
 

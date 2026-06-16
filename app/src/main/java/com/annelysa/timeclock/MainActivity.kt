@@ -50,8 +50,10 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.ExpandLess
@@ -151,6 +153,7 @@ class MainActivity : ComponentActivity() {
                     onManualDateChange = viewModel::updateManualDate,
                     onManualClockInChange = viewModel::updateManualClockIn,
                     onManualClockOutChange = viewModel::updateManualClockOut,
+                    onManualNoteChange = viewModel::updateManualNote,
                     onManualSessionSave = viewModel::saveManualSession,
                     onManualSessionCancel = viewModel::cancelManualEdit,
                     onAbsenceDateChange = viewModel::updateAbsenceDate,
@@ -182,6 +185,7 @@ class MainActivity : ComponentActivity() {
                     onClockInReminderToggle = viewModel::toggleClockInReminder,
                     onClockInReminderTimeChange = viewModel::updateClockInReminderTime,
                     onClockOutReminderToggle = viewModel::toggleClockOutReminder,
+                    onActiveSessionNoteChange = viewModel::updateActiveSessionNote,
                 )
             }
         }
@@ -333,6 +337,7 @@ data class TimeClockUiState(
     val activeDuration: Duration = Duration.ZERO,
     val activeClockInEditInput: String = "",
     val activeClockInEditError: String? = null,
+    val activeSessionNoteInput: String = "",
     val recentClockOutEditInput: String = "",
     val recentClockOutEditError: String? = null,
     val todayTotalDuration: Duration = Duration.ZERO,
@@ -362,6 +367,7 @@ data class TimeClockUiState(
     val manualDateInput: String = formatDateInput(LocalDate.now()),
     val manualClockInInput: String = "",
     val manualClockOutInput: String = "",
+    val manualNoteInput: String = "",
     val manualEntryError: String? = null,
     val editingSessionClockInMillis: Long? = null,
     val editingSessionClockOutMillis: Long? = null,
@@ -400,6 +406,7 @@ data class WorkProfile(
 data class WorkSession(
     val clockIn: Instant,
     val clockOut: Instant,
+    val note: String = "",
 ) {
     val duration: Duration = Duration.between(clockIn, clockOut).coerceAtLeast(Duration.ZERO)
 }
@@ -424,12 +431,10 @@ data class AbsenceEntry(
 enum class AbsenceType(
     val label: String,
     val coversExpectedHours: Boolean,
-    val supportsDateRange: Boolean,
 ) {
-    VACATION("Vacation / holiday", true, true),
-    SICK_DAY("Sick day", true, true),
-    NO_WORK("No work", true, false),
-    TIME_OFF("Time off", false, false),
+    VACATION("Holiday", true),
+    SICK_DAY("Sick day", true),
+    NO_WORK("No work", true),
 }
 
 data class WorkReport(
@@ -466,7 +471,7 @@ enum class ExportOption(
     OVERTIME_BALANCE("Overtime balance"),
     EARNINGS("Earnings"),
     SESSIONS("Work sessions"),
-    ABSENCES("Absences and time off"),
+    ABSENCES("Absences"),
     NOTES("Notes"),
 }
 
@@ -519,6 +524,7 @@ enum class TodayOvertimeRange(val label: String) {
     FOUR_WEEKS("4 weeks"),
     SIX_MONTHS("6 months"),
     TWELVE_MONTHS("1 year"),
+    ALL_TIME("All time"),
     CUSTOM("Custom"),
 }
 
@@ -913,7 +919,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         val activeClockIn = state.clockInTime
         val now = Instant.now()
         val completedSessions = if (activeClockIn != null && now.isAfter(activeClockIn)) {
-            (state.completedSessions + WorkSession(activeClockIn, now)).sortedBy { it.clockIn }
+            (state.completedSessions + WorkSession(activeClockIn, now, note = state.activeSessionNoteInput.trim())).sortedBy { it.clockIn }
         } else {
             state.completedSessions
         }
@@ -942,6 +948,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 activeDuration = Duration.ZERO,
                 activeClockInEditInput = "",
                 activeClockInEditError = null,
+                activeSessionNoteInput = "",
                 completedSessions = completedSessions,
                 lastCompletedSession = completedSessions.maxByOrNull { it.clockOut },
                 profileError = null,
@@ -982,6 +989,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 activeDuration = Duration.ZERO,
                 activeClockInEditInput = formatTimeInput(now),
                 activeClockInEditError = null,
+                activeSessionNoteInput = "",
                 recentClockOutEditError = null,
             ),
         )
@@ -993,7 +1001,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
     fun clockOut() {
         val startedAt = _uiState.value.clockInTime ?: return
         val endedAt = Instant.now()
-        val session = WorkSession(startedAt, endedAt)
+        val session = WorkSession(startedAt, endedAt, note = _uiState.value.activeSessionNoteInput.trim())
         val completedSessions = (_uiState.value.completedSessions + session).sortedBy { it.clockIn }
 
         saveCompletedSessions(completedSessions)
@@ -1016,6 +1024,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 activeDuration = Duration.ZERO,
                 activeClockInEditInput = "",
                 activeClockInEditError = null,
+                activeSessionNoteInput = "",
                 recentClockOutEditInput = formatTimeInput(endedAt),
                 recentClockOutEditError = null,
                 todayLastClockOut = endedAt,
@@ -1081,6 +1090,10 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         )
     }
 
+    fun updateActiveSessionNote(input: String) {
+        _uiState.value = _uiState.value.copy(activeSessionNoteInput = input.take(160))
+    }
+
     fun saveRecentClockOutTime(): Boolean {
         val state = _uiState.value
         val session = state.lastCompletedSession ?: return false
@@ -1097,11 +1110,6 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             _uiState.value = state.copy(recentClockOutEditError = "Clock out must be after clock in.")
             return false
         }
-        if (newClockOut.isAfter(Instant.now())) {
-            _uiState.value = state.copy(recentClockOutEditError = "Clock out cannot be in the future.")
-            return false
-        }
-
         val updatedSession = session.copy(clockOut = newClockOut)
         val completedSessions = state.completedSessions.map { existingSession ->
             if (existingSession.clockIn == session.clockIn && existingSession.clockOut == session.clockOut) {
@@ -1145,6 +1153,13 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         )
     }
 
+    fun updateManualNote(input: String) {
+        _uiState.value = _uiState.value.copy(
+            manualNoteInput = input.take(160),
+            manualEntryError = null,
+        )
+    }
+
     fun startEditingSession(session: WorkSession) {
         val zoneId = ZoneId.systemDefault()
         val clockIn = session.clockIn.atZone(zoneId)
@@ -1154,6 +1169,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             manualDateInput = formatDateInput(clockIn.toLocalDate()),
             manualClockInInput = TIME_INPUT_FORMATTER.format(clockIn.toLocalTime()),
             manualClockOutInput = TIME_INPUT_FORMATTER.format(clockOut.toLocalTime()),
+            manualNoteInput = session.note,
             manualEntryError = null,
             editingSessionClockInMillis = session.clockIn.toEpochMilli(),
             editingSessionClockOutMillis = session.clockOut.toEpochMilli(),
@@ -1165,6 +1181,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             manualDateInput = formatDateInput(LocalDate.now()),
             manualClockInInput = "",
             manualClockOutInput = "",
+            manualNoteInput = "",
             manualEntryError = null,
             editingSessionClockInMillis = null,
             editingSessionClockOutMillis = null,
@@ -1206,35 +1223,21 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         )
     }
 
-    fun saveAbsence() {
+    fun saveAbsence(): Boolean {
         val state = _uiState.value
         val startDate = runCatching { LocalDate.parse(state.absenceDateInput) }.getOrNull()
         if (startDate == null) {
             _uiState.value = state.copy(absenceEntryError = "Use date format YYYY-MM-DD.")
-            return
+            return false
         }
-        val endDate = if (state.selectedAbsenceType.supportsDateRange) {
-            runCatching { LocalDate.parse(state.absenceEndDateInput) }.getOrNull()
-        } else {
-            startDate
-        }
+        val endDate = runCatching { LocalDate.parse(state.absenceEndDateInput) }.getOrNull()
         if (endDate == null) {
             _uiState.value = state.copy(absenceEntryError = "Use end date format YYYY-MM-DD.")
-            return
+            return false
         }
         if (endDate.isBefore(startDate)) {
             _uiState.value = state.copy(absenceEntryError = "End date must be after start date.")
-            return
-        }
-
-        val duration = if (state.selectedAbsenceType == AbsenceType.TIME_OFF) {
-            state.absenceHoursInput.toDurationOrNull()
-        } else {
-            Duration.ZERO
-        }
-        if (state.selectedAbsenceType == AbsenceType.TIME_OFF && (duration == null || duration <= Duration.ZERO)) {
-            _uiState.value = state.copy(absenceEntryError = "Add time off like 2:00 or 1h30m.")
-            return
+            return false
         }
 
         val dates = buildDateRange(startDate, endDate)
@@ -1243,7 +1246,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
             AbsenceEntry(
                 date = date,
                 type = state.selectedAbsenceType,
-                duration = duration ?: Duration.ZERO,
+                duration = Duration.ZERO,
                 note = state.absenceNoteInput.trim(),
             )
         }
@@ -1264,6 +1267,8 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         )
         rescheduleLongSessionReminders(_uiState.value)
         refreshHomeScreenWidgets()
+        Toast.makeText(getApplication<Application>(), "Absence added", Toast.LENGTH_SHORT).show()
+        return true
     }
 
     fun deleteAbsence(absence: AbsenceEntry) {
@@ -1279,20 +1284,20 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         refreshHomeScreenWidgets()
     }
 
-    fun saveManualSession() {
+    fun saveManualSession(): Boolean {
         val parsedSession = parseManualSession()
         if (parsedSession == null) {
             _uiState.value = _uiState.value.copy(
                 manualEntryError = "Use date YYYY-MM-DD and times like 09:00 and 17:00.",
             )
-            return
+            return false
         }
 
         if (parsedSession.clockOut <= parsedSession.clockIn) {
             _uiState.value = _uiState.value.copy(
                 manualEntryError = "Clock out must be after clock in.",
             )
-            return
+            return false
         }
 
         val editingClockInMillis = _uiState.value.editingSessionClockInMillis
@@ -1316,11 +1321,14 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                 manualDateInput = formatDateInput(LocalDate.now()),
                 manualClockInInput = "",
                 manualClockOutInput = "",
+                manualNoteInput = "",
                 manualEntryError = null,
                 editingSessionClockInMillis = null,
                 editingSessionClockOutMillis = null,
             ),
         )
+        Toast.makeText(getApplication<Application>(), "Session saved", Toast.LENGTH_SHORT).show()
+        return true
     }
 
     fun deleteSession(session: WorkSession) {
@@ -1798,7 +1806,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         val zoneId = ZoneId.systemDefault()
         val today = LocalDate.now(zoneId)
         val todayCompletedSessions = state.completedSessions.filter { it.overlapsDate(today, zoneId) }
-        val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now()) }
+        val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now(), note = state.activeSessionNoteInput.trim()) }
         val todayAbsence = state.absences.firstOrNull { it.date == today }
         val todaySessions = todayCompletedSessions + listOfNotNull(activeSession)
             .filter { it.overlapsDate(today, zoneId) }
@@ -2013,7 +2021,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun encodeSessions(sessions: List<WorkSession>): String {
         return sessions.joinToString(separator = "\n") {
-            "${it.clockIn.toEpochMilli()},${it.clockOut.toEpochMilli()}"
+            "${it.clockIn.toEpochMilli()}|${it.clockOut.toEpochMilli()}|${sanitizeSessionNote(it.note)}"
         }
     }
 
@@ -2056,6 +2064,8 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                     ?.let { value ->
                         if (value == "PUBLIC_HOLIDAY") {
                             AbsenceType.VACATION
+                        } else if (value == "TIME_OFF") {
+                            AbsenceType.NO_WORK
                         } else {
                             runCatching { AbsenceType.valueOf(value) }.getOrNull()
                         }
@@ -2082,12 +2092,16 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
     private fun decodeSessions(encoded: String): List<WorkSession> {
         return encoded.lineSequence()
             .mapNotNull { line ->
-                val parts = line.split(",")
+                val parts = if ("|" in line) line.split("|", limit = 3) else line.split(",")
                 val clockIn = parts.getOrNull(0)?.toLongOrNull()
                 val clockOut = parts.getOrNull(1)?.toLongOrNull()
 
                 if (clockIn != null && clockOut != null && clockOut >= clockIn) {
-                    WorkSession(Instant.ofEpochMilli(clockIn), Instant.ofEpochMilli(clockOut))
+                    WorkSession(
+                        clockIn = Instant.ofEpochMilli(clockIn),
+                        clockOut = Instant.ofEpochMilli(clockOut),
+                        note = parts.getOrNull(2).orEmpty(),
+                    )
                 } else {
                     null
                 }
@@ -2120,6 +2134,10 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         return input.filter { it.isDigit() || it == ':' }.take(5)
     }
 
+    private fun sanitizeSessionNote(input: String): String {
+        return input.replace("|", " ").replace("\n", " ").take(160)
+    }
+
     private fun parseManualSession(): WorkSession? {
         val date = runCatching { LocalDate.parse(_uiState.value.manualDateInput) }.getOrNull()
             ?: return null
@@ -2130,6 +2148,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
         return WorkSession(
             clockIn = date.atTime(clockIn).atZone(zoneId).toInstant(),
             clockOut = date.atTime(clockOut).atZone(zoneId).toInstant(),
+            note = _uiState.value.manualNoteInput.trim(),
         )
     }
 
@@ -2437,14 +2456,15 @@ fun TimeClockScreen(
     onManualDateChange: (String) -> Unit,
     onManualClockInChange: (String) -> Unit,
     onManualClockOutChange: (String) -> Unit,
-    onManualSessionSave: () -> Unit,
+    onManualNoteChange: (String) -> Unit,
+    onManualSessionSave: () -> Boolean,
     onManualSessionCancel: () -> Unit,
     onAbsenceDateChange: (String) -> Unit,
     onAbsenceEndDateChange: (String) -> Unit,
     onAbsenceTypeSelect: (AbsenceType) -> Unit,
     onAbsenceHoursChange: (String) -> Unit,
     onAbsenceNoteChange: (String) -> Unit,
-    onAbsenceSave: () -> Unit,
+    onAbsenceSave: () -> Boolean,
     onAbsenceDelete: (AbsenceEntry) -> Unit,
     onSessionEdit: (WorkSession) -> Unit,
     onSessionDelete: (WorkSession) -> Unit,
@@ -2468,8 +2488,13 @@ fun TimeClockScreen(
     onClockInReminderToggle: (Boolean) -> Unit,
     onClockInReminderTimeChange: (String) -> Unit,
     onClockOutReminderToggle: (Boolean) -> Unit,
+    onActiveSessionNoteChange: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var isAddMenuExpanded by remember { mutableStateOf(false) }
+    var isManualEntryDialogOpen by remember { mutableStateOf(false) }
+    var isAbsenceDialogOpen by remember { mutableStateOf(false) }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = Color(0xFFF3F4F6),
@@ -2477,6 +2502,16 @@ fun TimeClockScreen(
             TimeClockBottomNavigation(
                 selectedTab = state.selectedTab,
                 onTabSelect = onTabSelect,
+                expanded = isAddMenuExpanded,
+                onExpandedChange = { isAddMenuExpanded = it },
+                onManualEntryClick = {
+                    isAddMenuExpanded = false
+                    isManualEntryDialogOpen = true
+                },
+                onAbsenceClick = {
+                    isAddMenuExpanded = false
+                    isAbsenceDialogOpen = true
+                },
             )
         },
     ) { padding ->
@@ -2519,20 +2554,10 @@ fun TimeClockScreen(
                     onTodayOvertimeRangeChange = onTodayOvertimeRangeChange,
                     onTodayOvertimeStartDateChange = onTodayOvertimeStartDateChange,
                     onTodayOvertimeEndDateChange = onTodayOvertimeEndDateChange,
+                    onActiveSessionNoteChange = onActiveSessionNoteChange,
                 )
                 AppTab.HISTORY -> HistoryTab(
                     state = state,
-                    onManualDateChange = onManualDateChange,
-                    onManualClockInChange = onManualClockInChange,
-                    onManualClockOutChange = onManualClockOutChange,
-                    onManualSessionSave = onManualSessionSave,
-                    onManualSessionCancel = onManualSessionCancel,
-                    onAbsenceDateChange = onAbsenceDateChange,
-                    onAbsenceEndDateChange = onAbsenceEndDateChange,
-                    onAbsenceTypeSelect = onAbsenceTypeSelect,
-                    onAbsenceHoursChange = onAbsenceHoursChange,
-                    onAbsenceNoteChange = onAbsenceNoteChange,
-                    onAbsenceSave = onAbsenceSave,
                     onAbsenceDelete = onAbsenceDelete,
                     onHistoryDayToggle = onHistoryDayToggle,
                     onSessionEdit = onSessionEdit,
@@ -2581,15 +2606,89 @@ fun TimeClockScreen(
             }
         }
     }
+
+    if (isManualEntryDialogOpen || state.editingSessionClockInMillis != null) {
+        ManualEntryDialog(
+            state = state,
+            onDateChange = onManualDateChange,
+            onClockInChange = onManualClockInChange,
+            onClockOutChange = onManualClockOutChange,
+            onNoteChange = onManualNoteChange,
+            onSave = {
+                val saved = onManualSessionSave()
+                if (saved) {
+                    isManualEntryDialogOpen = false
+                }
+                saved
+            },
+            onCancel = {
+                isManualEntryDialogOpen = false
+                onManualSessionCancel()
+            },
+            onDismiss = {
+                isManualEntryDialogOpen = false
+                if (state.editingSessionClockInMillis != null) {
+                    onManualSessionCancel()
+                }
+            },
+        )
+    }
+
+    if (isAbsenceDialogOpen) {
+        AbsenceEntryDialog(
+            state = state,
+            onDateChange = onAbsenceDateChange,
+            onEndDateChange = onAbsenceEndDateChange,
+            onTypeSelect = onAbsenceTypeSelect,
+            onHoursChange = onAbsenceHoursChange,
+            onNoteChange = onAbsenceNoteChange,
+            onSave = {
+                val saved = onAbsenceSave()
+                if (saved) {
+                    isAbsenceDialogOpen = false
+                }
+                saved
+            },
+            onDismiss = { isAbsenceDialogOpen = false },
+        )
+    }
 }
 
 @Composable
 private fun TimeClockBottomNavigation(
     selectedTab: AppTab,
     onTabSelect: (AppTab) -> Unit,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onManualEntryClick: () -> Unit,
+    onAbsenceClick: () -> Unit,
 ) {
     NavigationBar(containerColor = Color.White) {
-        AppTab.entries.forEach { tab ->
+        listOf(AppTab.TODAY, AppTab.HISTORY).forEach { tab ->
+            NavigationBarItem(
+                selected = tab == selectedTab,
+                onClick = { onTabSelect(tab) },
+                icon = {
+                    Icon(
+                        imageVector = tab.icon,
+                        contentDescription = tab.label,
+                    )
+                },
+                label = { Text(text = tab.label) },
+            )
+        }
+        Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.Center,
+        ) {
+            AddEntryMenuButton(
+                expanded = expanded,
+                onExpandedChange = onExpandedChange,
+                onManualEntryClick = onManualEntryClick,
+                onAbsenceClick = onAbsenceClick,
+            )
+        }
+        listOf(AppTab.INSIGHTS, AppTab.SETTINGS).forEach { tab ->
             NavigationBarItem(
                 selected = tab == selectedTab,
                 onClick = { onTabSelect(tab) },
@@ -2606,6 +2705,119 @@ private fun TimeClockBottomNavigation(
 }
 
 @Composable
+private fun AddEntryMenuButton(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onManualEntryClick: () -> Unit,
+    onAbsenceClick: () -> Unit,
+) {
+    Box {
+        FloatingActionButton(
+            onClick = { onExpandedChange(true) },
+            containerColor = Color(0xFF16A34A),
+            contentColor = Color.White,
+            modifier = Modifier
+                .width(56.dp)
+                .height(56.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = "Add",
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { onExpandedChange(false) },
+        ) {
+            DropdownMenuItem(
+                text = { Text(text = "Manual entry") },
+                onClick = onManualEntryClick,
+            )
+            DropdownMenuItem(
+                text = { Text(text = "Absence") },
+                onClick = onAbsenceClick,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ManualEntryDialog(
+    state: TimeClockUiState,
+    onDateChange: (String) -> Unit,
+    onClockInChange: (String) -> Unit,
+    onClockOutChange: (String) -> Unit,
+    onNoteChange: (String) -> Unit,
+    onSave: () -> Boolean,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = if (state.editingSessionClockInMillis != null) "Edit session" else "Manual entry") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+            ) {
+                ManualEntryCard(
+                    state = state,
+                    onDateChange = onDateChange,
+                    onClockInChange = onClockInChange,
+                    onClockOutChange = onClockOutChange,
+                    onNoteChange = onNoteChange,
+                    onSave = onSave,
+                    onCancel = onCancel,
+                )
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = "Close")
+            }
+        },
+    )
+}
+
+@Composable
+private fun AbsenceEntryDialog(
+    state: TimeClockUiState,
+    onDateChange: (String) -> Unit,
+    onEndDateChange: (String) -> Unit,
+    onTypeSelect: (AbsenceType) -> Unit,
+    onHoursChange: (String) -> Unit,
+    onNoteChange: (String) -> Unit,
+    onSave: () -> Boolean,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = "Absence") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+            ) {
+                AbsenceEntryCard(
+                    state = state,
+                    onDateChange = onDateChange,
+                    onEndDateChange = onEndDateChange,
+                    onTypeSelect = onTypeSelect,
+                    onHoursChange = onHoursChange,
+                    onNoteChange = onNoteChange,
+                    onSave = onSave,
+                )
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = "Close")
+            }
+        },
+    )
+}
+
+@Composable
 private fun TodayTab(
     state: TimeClockUiState,
     onClockIn: () -> Unit,
@@ -2617,7 +2829,12 @@ private fun TodayTab(
     onTodayOvertimeRangeChange: (TodayOvertimeRange) -> Unit,
     onTodayOvertimeStartDateChange: (String) -> Unit,
     onTodayOvertimeEndDateChange: (String) -> Unit,
+    onActiveSessionNoteChange: (String) -> Unit,
 ) {
+    var showAbsenceClockInDialog by remember { mutableStateOf(false) }
+    val today = LocalDate.now()
+    val todayAbsence = state.absences.firstOrNull { it.date == today }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -2626,7 +2843,13 @@ private fun TodayTab(
         ClockActionButton(
             isClockedIn = state.isClockedIn,
             isTrackingEnded = state.activeProfile.trackingEndDate != null,
-            onClockIn = onClockIn,
+            onClockIn = {
+                if (todayAbsence != null) {
+                    showAbsenceClockInDialog = true
+                } else {
+                    onClockIn()
+                }
+            },
             onClockOut = onClockOut,
         )
         ActiveTimerBlock(state = state)
@@ -2637,6 +2860,12 @@ private fun TodayTab(
             onRecentClockOutChange = onRecentClockOutChange,
             onRecentClockOutSave = onRecentClockOutSave,
         )
+        if (state.isClockedIn) {
+            SessionNoteCard(
+                note = state.activeSessionNoteInput,
+                onNoteChange = onActiveSessionNoteChange,
+            )
+        }
         DailySummaryCard(state = state)
         OvertimePreviewCard(
             state = state,
@@ -2645,22 +2874,39 @@ private fun TodayTab(
             onEndDateChange = onTodayOvertimeEndDateChange,
         )
     }
+
+    if (showAbsenceClockInDialog && todayAbsence != null) {
+        AlertDialog(
+            onDismissRequest = { showAbsenceClockInDialog = false },
+            title = { Text(text = "Clock in on ${todayAbsence.type.label}?") },
+            text = {
+                Text(
+                    text = "You have ${todayAbsence.type.label.lowercase()} registered today. You can still clock in, and the worked time will count as actual work. The absence will keep today's expected hours at 0, so any time you work today will count as positive overtime.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showAbsenceClockInDialog = false
+                        onClockIn()
+                    },
+                ) {
+                    Text(text = "Clock in anyway")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAbsenceClockInDialog = false }) {
+                    Text(text = "Cancel")
+                }
+            },
+        )
+    }
 }
 
 @Composable
 private fun HistoryTab(
     state: TimeClockUiState,
-    onManualDateChange: (String) -> Unit,
-    onManualClockInChange: (String) -> Unit,
-    onManualClockOutChange: (String) -> Unit,
-    onManualSessionSave: () -> Unit,
-    onManualSessionCancel: () -> Unit,
-    onAbsenceDateChange: (String) -> Unit,
-    onAbsenceEndDateChange: (String) -> Unit,
-    onAbsenceTypeSelect: (AbsenceType) -> Unit,
-    onAbsenceHoursChange: (String) -> Unit,
-    onAbsenceNoteChange: (String) -> Unit,
-    onAbsenceSave: () -> Unit,
     onAbsenceDelete: (AbsenceEntry) -> Unit,
     onHistoryDayToggle: (LocalDate) -> Unit,
     onSessionEdit: (WorkSession) -> Unit,
@@ -2670,23 +2916,6 @@ private fun HistoryTab(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        ManualEntryCard(
-            state = state,
-            onDateChange = onManualDateChange,
-            onClockInChange = onManualClockInChange,
-            onClockOutChange = onManualClockOutChange,
-            onSave = onManualSessionSave,
-            onCancel = onManualSessionCancel,
-        )
-        AbsenceEntryCard(
-            state = state,
-            onDateChange = onAbsenceDateChange,
-            onEndDateChange = onAbsenceEndDateChange,
-            onTypeSelect = onAbsenceTypeSelect,
-            onHoursChange = onAbsenceHoursChange,
-            onNoteChange = onAbsenceNoteChange,
-            onSave = onAbsenceSave,
-        )
         HistoryCard(
             state = state,
             onHistoryDayToggle = onHistoryDayToggle,
@@ -3019,19 +3248,23 @@ private fun QuickTimeCorrectionCard(
     if (!state.isClockedIn && state.lastCompletedSession == null) return
     var showDialog by remember { mutableStateOf(false) }
     val isCorrectingClockIn = state.isClockedIn
-    val buttonLabel = if (isCorrectingClockIn) "Correct clock-in" else "Correct clock-out"
+    val buttonLabel = if (isCorrectingClockIn) "Correct latest clock in" else "Correct latest clock out"
     val dialogTitle = if (isCorrectingClockIn) "Correct clock-in time" else "Correct clock-out time"
     val fieldValue = if (isCorrectingClockIn) state.activeClockInEditInput else state.recentClockOutEditInput
     val fieldLabel = if (isCorrectingClockIn) "Clock in" else "Clock out"
     val error = if (isCorrectingClockIn) state.activeClockInEditError else state.recentClockOutEditError
     val onValueChange = if (isCorrectingClockIn) onActiveClockInChange else onRecentClockOutChange
     val onSave = if (isCorrectingClockIn) onActiveClockInSave else onRecentClockOutSave
+    val futureClockOutWarning = if (isCorrectingClockIn) null else recentClockOutFutureWarning(state)
 
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.End,
     ) {
-        TextButton(onClick = { showDialog = true }) {
+        OutlinedButton(
+            onClick = { showDialog = true },
+            shape = RoundedCornerShape(4.dp),
+        ) {
             Text(text = buttonLabel)
         }
     }
@@ -3064,6 +3297,13 @@ private fun QuickTimeCorrectionCard(
                             color = Color(0xFFB42318),
                         )
                     }
+                    futureClockOutWarning?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFF92400E),
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -3083,6 +3323,37 @@ private fun QuickTimeCorrectionCard(
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun SessionNoteCard(
+    note: String,
+    onNoteChange: (String) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = "Session note",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            OutlinedTextField(
+                value = note,
+                onValueChange = onNoteChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(text = "Note") },
+                minLines = 2,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+            )
+        }
     }
 }
 
@@ -3113,7 +3384,7 @@ private fun OvertimePreviewCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Overtime",
+                        text = "Overtime Summary",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
@@ -3122,15 +3393,16 @@ private fun OvertimePreviewCard(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Text(
+                        text = "${formatDateInput(balance.startDate)} to ${formatDateInput(balance.endDate)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 Text(
                     text = formatSignedBalance(balance.totalBalance),
                     style = MaterialTheme.typography.titleLarge,
-                    color = if (balance.totalBalance.isNegative) {
-                        Color(0xFFB42318)
-                    } else {
-                        Color(0xFF0F766E)
-                    },
+                    color = signedDurationColor(balance.totalBalance),
                     fontWeight = FontWeight.Bold,
                 )
             }
@@ -3171,7 +3443,6 @@ private fun OvertimePreviewCard(
             ) {
                 TimeStamp(label = "Actual", value = formatHoursAndMinutes(balance.actualDuration))
                 TimeStamp(label = "Expected", value = formatHoursAndMinutes(balance.expectedDuration))
-                TimeStamp(label = "Period", value = formatSignedBalance(balance.periodBalance))
             }
         }
     }
@@ -3487,6 +3758,15 @@ private fun ClockActionButton(
 
 @Composable
 private fun DailySummaryCard(state: TimeClockUiState) {
+    val targetDuration = state.todayCreditedDuration.minus(state.todayBalanceDuration)
+    val progress = if (targetDuration > Duration.ZERO) {
+        (state.todayCreditedDuration.toMillis().toFloat() / targetDuration.toMillis().coerceAtLeast(1L))
+            .coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    val remainingDuration = if (state.todayBalanceDuration.isNegative) state.todayBalanceDuration.abs() else Duration.ZERO
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -3518,13 +3798,42 @@ private fun DailySummaryCard(state: TimeClockUiState) {
             Text(
                 text = state.todayProgressMessage,
                 style = MaterialTheme.typography.bodyLarge,
-                color = if (state.todayBalanceDuration.isNegative) {
-                    Color(0xFFB42318)
-                } else {
-                    Color(0xFF0F766E)
-                },
+                color = signedDurationColor(state.todayBalanceDuration),
                 fontWeight = FontWeight.SemiBold,
             )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(10.dp)
+                    .background(Color(0xFFE5E7EB), RoundedCornerShape(999.dp)),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(progress)
+                        .background(signedDurationColor(state.todayBalanceDuration), RoundedCornerShape(999.dp)),
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "${formatHoursAndMinutes(state.todayCreditedDuration)} worked",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = if (remainingDuration > Duration.ZERO) {
+                        "${formatHoursAndMinutes(remainingDuration)} left"
+                    } else {
+                        "Target reached"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = signedDurationColor(state.todayBalanceDuration),
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -3812,10 +4121,12 @@ private fun ManualEntryCard(
     onDateChange: (String) -> Unit,
     onClockInChange: (String) -> Unit,
     onClockOutChange: (String) -> Unit,
-    onSave: () -> Unit,
+    onNoteChange: (String) -> Unit,
+    onSave: () -> Boolean,
     onCancel: () -> Unit,
 ) {
     val isEditing = state.editingSessionClockInMillis != null
+    val futureClockOutWarning = manualClockOutFutureWarning(state)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -3837,28 +4148,38 @@ private fun ManualEntryCard(
                 modifier = Modifier.fillMaxWidth(),
                 label = "Date",
             )
-            Row(
+            TimePickerTextField(
+                value = state.manualClockInInput,
+                onValueChange = onClockInChange,
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                TimePickerTextField(
-                    value = state.manualClockInInput,
-                    onValueChange = onClockInChange,
-                    modifier = Modifier.weight(1f),
-                    label = "Clock in",
-                )
-                TimePickerTextField(
-                    value = state.manualClockOutInput,
-                    onValueChange = onClockOutChange,
-                    modifier = Modifier.weight(1f),
-                    label = "Clock out",
-                )
-            }
+                label = "Clock in",
+            )
+            TimePickerTextField(
+                value = state.manualClockOutInput,
+                onValueChange = onClockOutChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = "Clock out",
+            )
+            OutlinedTextField(
+                value = state.manualNoteInput,
+                onValueChange = onNoteChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(text = "Note") },
+                minLines = 2,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+            )
             state.manualEntryError?.let { error ->
                 Text(
                     text = error,
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color(0xFFB42318),
+                )
+            }
+            futureClockOutWarning?.let { warning ->
+                Text(
+                    text = warning,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFF92400E),
                 )
             }
             Row(
@@ -3870,7 +4191,7 @@ private fun ManualEntryCard(
                         Text(text = "Cancel")
                     }
                 }
-                Button(onClick = onSave) {
+                Button(onClick = { onSave() }) {
                     Text(text = if (isEditing) "Save changes" else "Add session")
                 }
             }
@@ -3886,8 +4207,11 @@ private fun AbsenceEntryCard(
     onTypeSelect: (AbsenceType) -> Unit,
     onHoursChange: (String) -> Unit,
     onNoteChange: (String) -> Unit,
-    onSave: () -> Unit,
+    onSave: () -> Boolean,
 ) {
+    var showWorkedDayWarning by remember { mutableStateOf(false) }
+    val overlappingSessionCount = absenceOverlappingSessionCount(state)
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -3902,34 +4226,22 @@ private fun AbsenceEntryCard(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
-            DatePickerTextField(
-                value = state.absenceDateInput,
-                onValueChange = onDateChange,
-                modifier = Modifier.fillMaxWidth(),
-                label = if (state.selectedAbsenceType.supportsDateRange) "Start date" else "Date",
-            )
             AbsenceTypeSelector(
                 selectedType = state.selectedAbsenceType,
                 onTypeSelect = onTypeSelect,
             )
-            if (state.selectedAbsenceType.supportsDateRange) {
-                DatePickerTextField(
-                    value = state.absenceEndDateInput,
-                    onValueChange = onEndDateChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = "End date",
-                )
-            }
-            if (state.selectedAbsenceType == AbsenceType.TIME_OFF) {
-                OutlinedTextField(
-                    value = state.absenceHoursInput,
-                    onValueChange = onHoursChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Time off hours") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                )
-            }
+            DatePickerTextField(
+                value = state.absenceDateInput,
+                onValueChange = onDateChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = "Start date",
+            )
+            DatePickerTextField(
+                value = state.absenceEndDateInput,
+                onValueChange = onEndDateChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = "End date",
+            )
             OutlinedTextField(
                 value = state.absenceNoteInput,
                 onValueChange = onNoteChange,
@@ -3949,11 +4261,47 @@ private fun AbsenceEntryCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
             ) {
-                Button(onClick = onSave) {
+                Button(
+                    onClick = {
+                        if (overlappingSessionCount > 0) {
+                            showWorkedDayWarning = true
+                        } else {
+                            onSave()
+                        }
+                    },
+                ) {
                     Text(text = "Add absence")
                 }
             }
         }
+    }
+
+    if (showWorkedDayWarning) {
+        AlertDialog(
+            onDismissRequest = { showWorkedDayWarning = false },
+            title = { Text(text = "Work already registered") },
+            text = {
+                Text(
+                    text = "There ${if (overlappingSessionCount == 1) "is" else "are"} already $overlappingSessionCount work ${if (overlappingSessionCount == 1) "session" else "sessions"} in this absence period. If you save the absence, those worked hours will still count as actual work, while the absence removes expected hours for those days.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showWorkedDayWarning = false
+                        onSave()
+                    },
+                ) {
+                    Text(text = "Save anyway")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showWorkedDayWarning = false }) {
+                    Text(text = "Cancel")
+                }
+            },
+        )
     }
 }
 
@@ -4671,11 +5019,7 @@ private fun OvertimeBalanceCard(
                 fontSize = 34.sp,
                 lineHeight = 38.sp,
                 fontWeight = FontWeight.Bold,
-                color = if (balance.totalBalance.isNegative) {
-                    Color(0xFFB42318)
-                } else {
-                    Color(0xFF0F766E)
-                },
+                color = signedDurationColor(balance.totalBalance),
             )
             Text(
                 text = "${balance.range.label} since ${formatDateInput(balance.startDate)}",
@@ -4693,7 +5037,7 @@ private fun OvertimeBalanceCard(
             Text(
                 text = "Period balance ${formatSignedBalance(balance.periodBalance)}",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = signedDurationColor(balance.periodBalance),
             )
         }
     }
@@ -4853,8 +5197,12 @@ private fun HistoryAbsenceRow(
     onDelete: () -> Unit,
 ) {
     Column(
-        modifier = Modifier.padding(start = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp)
+            .background(Color(0xFFF9FAFB), RoundedCornerShape(6.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
             text = formatAbsenceLabel(absence),
@@ -4881,23 +5229,46 @@ private fun HistorySessionRow(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val zoneId = ZoneId.systemDefault()
+    val clockIn = session.clockIn.atZone(zoneId)
+    val clockOut = session.clockOut.atZone(zoneId)
+
     Column(
-        modifier = Modifier.padding(start = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp)
+            .background(Color(0xFFF9FAFB), RoundedCornerShape(6.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text(
-                text = "${formatTime(session.clockIn)} - ${formatTime(session.clockOut)}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "${TIME_FORMATTER.format(clockIn)} - ${TIME_FORMATTER.format(clockOut)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
+                Text(
+                    text = formatDateInput(clockIn.toLocalDate()),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text(
                 text = formatHoursAndMinutes(session.duration),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
+            )
+        }
+        if (session.note.isNotBlank()) {
+            Text(
+                text = session.note,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -4912,7 +5283,11 @@ private fun HistorySessionRow(
 }
 
 @Composable
-private fun TimeStamp(label: String, value: String) {
+private fun TimeStamp(
+    label: String,
+    value: String,
+    valueColor: Color = MaterialTheme.colorScheme.onBackground,
+) {
     Column {
         Text(
             text = label,
@@ -4923,6 +5298,7 @@ private fun TimeStamp(label: String, value: String) {
             text = value,
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.Medium,
+            color = valueColor,
         )
     }
 }
@@ -4979,6 +5355,50 @@ private fun formatMoney(amount: Double, currency: String): String {
     return "$safeCurrency ${"%,.2f".format(amount.coerceAtLeast(0.0))}"
 }
 
+private fun manualClockOutFutureWarning(state: TimeClockUiState): String? {
+    val date = runCatching { LocalDate.parse(state.manualDateInput) }.getOrNull() ?: return null
+    val clockOut = runCatching { LocalTime.parse(state.manualClockOutInput, TIME_INPUT_FORMATTER) }.getOrNull()
+        ?: return null
+    val instant = date.atTime(clockOut).atZone(ZoneId.systemDefault()).toInstant()
+    return if (instant.isAfter(Instant.now())) "Clock out is in the future." else null
+}
+
+private fun recentClockOutFutureWarning(state: TimeClockUiState): String? {
+    val session = state.lastCompletedSession ?: return null
+    val clockOut = runCatching { LocalTime.parse(state.recentClockOutEditInput, TIME_INPUT_FORMATTER) }.getOrNull()
+        ?: return null
+    val date = session.clockOut.atZone(ZoneId.systemDefault()).toLocalDate()
+    val instant = date.atTime(clockOut).atZone(ZoneId.systemDefault()).toInstant()
+    return if (instant.isAfter(Instant.now())) "Clock out is in the future." else null
+}
+
+private fun absenceOverlappingSessionCount(state: TimeClockUiState): Int {
+    val startDate = runCatching { LocalDate.parse(state.absenceDateInput) }.getOrNull() ?: return 0
+    val endDate = runCatching { LocalDate.parse(state.absenceEndDateInput) }.getOrNull() ?: return 0
+    if (endDate.isBefore(startDate)) return 0
+
+    val zoneId = ZoneId.systemDefault()
+    val dates = buildDateRange(startDate, endDate)
+    val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now(), note = state.activeSessionNoteInput.trim()) }
+    val sessions = state.completedSessions + listOfNotNull(activeSession)
+
+    return sessions.count { session ->
+        dates.any { date -> sessionOverlapsDate(session, date, zoneId) }
+    }
+}
+
+private fun sessionOverlapsDate(
+    session: WorkSession,
+    date: LocalDate,
+    zoneId: ZoneId,
+): Boolean {
+    val dayStart = date.atStartOfDay(zoneId).toInstant()
+    val dayEnd = date.plusDays(1).atStartOfDay(zoneId).toInstant()
+    val overlapStart = maxOf(session.clockIn, dayStart)
+    val overlapEnd = minOf(session.clockOut, dayEnd)
+    return overlapEnd > overlapStart
+}
+
 private fun buildExportCsv(state: TimeClockUiState): String {
     val zoneId = ZoneId.systemDefault()
     val period = resolveExportPeriod(state)
@@ -4988,7 +5408,7 @@ private fun buildExportCsv(state: TimeClockUiState): String {
     val overtimeExpected = expectedDurationForRange(period.startDate, period.endDate, state)
     val exportBalance = overtimeActual.minus(overtimeExpected)
     val currency = state.currencyInput.ifBlank { DEFAULT_CURRENCY_INPUT }
-    val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now()) }
+    val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now(), note = state.activeSessionNoteInput.trim()) }
     val sessions = (state.completedSessions + listOfNotNull(activeSession))
         .filter { it.overlapsExportPeriod(period, zoneId) }
         .sortedBy { it.clockIn }
@@ -5071,23 +5491,31 @@ private fun buildExportCsv(state: TimeClockUiState): String {
 
     if (state.exportOptions.includeSessions) {
         row("Sessions")
-        row("Date", "Clock in", "Clock out", "Duration", "Status")
+        if (state.exportOptions.includeNotes) {
+            row("Date", "Clock in", "Clock out", "Duration", "Status", "Note")
+        } else {
+            row("Date", "Clock in", "Clock out", "Duration", "Status")
+        }
         sessions.forEach { session ->
             val clockIn = session.clockIn.atZone(zoneId)
             val clockOut = session.clockOut.atZone(zoneId)
-            row(
+            val cells = mutableListOf(
                 formatDateInput(clockIn.toLocalDate()),
                 TIME_FORMATTER.format(clockIn),
                 TIME_FORMATTER.format(clockOut),
                 formatHoursAndMinutes(session.duration),
                 if (activeSession != null && session.clockIn == activeSession.clockIn) "Active" else "Completed",
             )
+            if (state.exportOptions.includeNotes) {
+                cells += session.note
+            }
+            row(*cells.toTypedArray())
         }
         row()
     }
 
     if (state.exportOptions.includeAbsences) {
-        row("Absences and time off")
+        row("Absences")
         row("Date", "Type", "Hours", if (state.exportOptions.includeNotes) "Note" else "")
         absences.forEach { absence ->
             row(
@@ -5203,7 +5631,7 @@ private fun buildExportPdfBytes(state: TimeClockUiState): ByteArray {
     val exportBalance = overtimeActual.minus(overtimeExpected)
     val currency = state.currencyInput.ifBlank { DEFAULT_CURRENCY_INPUT }
     val zoneId = ZoneId.systemDefault()
-    val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now()) }
+    val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now(), note = state.activeSessionNoteInput.trim()) }
     val sessions = (state.completedSessions + listOfNotNull(activeSession))
         .filter { it.overlapsExportPeriod(period, zoneId) }
         .sortedByDescending { it.clockIn }
@@ -5283,8 +5711,9 @@ private fun buildExportPdfBytes(state: TimeClockUiState): ByteArray {
                 val clockIn = session.clockIn.atZone(zoneId)
                 val clockOut = session.clockOut.atZone(zoneId)
                 val status = if (activeSession != null && session.clockIn == activeSession.clockIn) "active" else "completed"
+                val note = if (state.exportOptions.includeNotes && session.note.isNotBlank()) " - ${session.note}" else ""
                 line(
-                    "${formatDateInput(clockIn.toLocalDate())}  ${TIME_FORMATTER.format(clockIn)}-${TIME_FORMATTER.format(clockOut)}  ${formatHoursAndMinutes(session.duration)}  $status",
+                    "${formatDateInput(clockIn.toLocalDate())}  ${TIME_FORMATTER.format(clockIn)}-${TIME_FORMATTER.format(clockOut)}  ${formatHoursAndMinutes(session.duration)}  $status$note",
                     bodyPaint,
                     gap = 14f,
                 )
@@ -5293,7 +5722,7 @@ private fun buildExportPdfBytes(state: TimeClockUiState): ByteArray {
     }
 
     if (state.exportOptions.includeAbsences) {
-        section("Absences And Time Off")
+        section("Absences")
         if (absences.isEmpty()) {
             line("No absence entries", mutedPaint, gap = 14f)
         } else {
@@ -5414,7 +5843,6 @@ private fun formatProgressMessage(
     expected: Duration,
 ): String {
     if (absence != null && absence.type.coversExpectedHours) return "${absence.type.label} today"
-    if (absence?.type == AbsenceType.TIME_OFF) return "${formatHoursAndMinutes(absence.duration)} time off today"
     if (!isTodayWorkday) return "No hours expected today"
 
     val balance = worked.minus(expected)
@@ -5553,7 +5981,11 @@ private fun buildOvertimeBalance(state: TimeClockUiState): OvertimeBalance {
 
 private fun buildTodayOvertimeBalance(state: TimeClockUiState): TodayOvertimeBalance {
     val today = LocalDate.now()
-    val defaultStartDate = todayStartDateForOvertimeRange(state.selectedTodayOvertimeRange, today)
+    val defaultStartDate = todayStartDateForOvertimeRange(
+        range = state.selectedTodayOvertimeRange,
+        today = today,
+        workplaceStartDate = state.activeProfile.trackingStartDate,
+    )
     val parsedCustomStart = runCatching { LocalDate.parse(state.todayOvertimeStartDateInput) }.getOrNull()
     val parsedCustomEnd = runCatching { LocalDate.parse(state.todayOvertimeEndDateInput) }.getOrNull()
     val rawStartDate = if (state.selectedTodayOvertimeRange == TodayOvertimeRange.CUSTOM) {
@@ -5572,11 +6004,7 @@ private fun buildTodayOvertimeBalance(state: TimeClockUiState): TodayOvertimeBal
     val expectedDuration = expectedDurationForRange(startDate, endDate, state)
 
     return TodayOvertimeBalance(
-        label = if (state.selectedTodayOvertimeRange == TodayOvertimeRange.CUSTOM) {
-            "${formatDateInput(startDate)} to ${formatDateInput(endDate)}"
-        } else {
-            state.selectedTodayOvertimeRange.label
-        },
+        label = state.selectedTodayOvertimeRange.label,
         startDate = startDate,
         endDate = endDate,
         actualDuration = actualDuration,
@@ -5588,12 +6016,14 @@ private fun buildTodayOvertimeBalance(state: TimeClockUiState): TodayOvertimeBal
 private fun todayStartDateForOvertimeRange(
     range: TodayOvertimeRange,
     today: LocalDate,
+    workplaceStartDate: LocalDate,
 ): LocalDate {
     return when (range) {
         TodayOvertimeRange.ONE_WEEK -> today.minusWeeks(1).plusDays(1)
         TodayOvertimeRange.FOUR_WEEKS -> today.minusWeeks(4).plusDays(1)
         TodayOvertimeRange.SIX_MONTHS -> today.minusMonths(6).plusDays(1)
         TodayOvertimeRange.TWELVE_MONTHS -> today.minusYears(1).plusDays(1)
+        TodayOvertimeRange.ALL_TIME -> workplaceStartDate
         TodayOvertimeRange.CUSTOM -> today
     }
 }
@@ -5731,7 +6161,7 @@ private fun actualDurationForRange(
 
     val rangeStart = effectiveStartDate.atStartOfDay(zoneId).toInstant()
     val rangeEnd = endDate.plusDays(1).atStartOfDay(zoneId).toInstant()
-    val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now()) }
+    val activeSession = state.clockInTime?.let { WorkSession(it, Instant.now(), note = state.activeSessionNoteInput.trim()) }
     val sessions = state.completedSessions + listOfNotNull(activeSession)
 
     return sessions.fold(Duration.ZERO) { total, session ->
@@ -5800,11 +6230,7 @@ private fun formatReportBalance(report: WorkReport): String {
 }
 
 private fun formatAbsenceLabel(absence: AbsenceEntry): String {
-    return if (absence.type == AbsenceType.TIME_OFF) {
-        "${absence.type.label}: ${formatHoursAndMinutes(absence.duration)}"
-    } else {
-        absence.type.label
-    }
+    return absence.type.label
 }
 
 private fun colorForBalance(
@@ -5842,6 +6268,14 @@ private fun formatSignedBalance(duration: Duration): String {
         duration.isNegative -> "-${formatHoursAndMinutes(duration.abs())}"
         duration == Duration.ZERO -> "0h 00m"
         else -> "+${formatHoursAndMinutes(duration)}"
+    }
+}
+
+private fun signedDurationColor(duration: Duration): Color {
+    return if (duration.isNegative) {
+        Color(0xFFB42318)
+    } else {
+        Color(0xFF0F766E)
     }
 }
 
@@ -6011,6 +6445,7 @@ private val TODAY_OVERTIME_RANGES = listOf(
     TodayOvertimeRange.FOUR_WEEKS,
     TodayOvertimeRange.SIX_MONTHS,
     TodayOvertimeRange.TWELVE_MONTHS,
+    TodayOvertimeRange.ALL_TIME,
     TodayOvertimeRange.CUSTOM,
 )
 
@@ -6075,14 +6510,15 @@ private fun ClockedOutPreview() {
             onManualDateChange = {},
             onManualClockInChange = {},
             onManualClockOutChange = {},
-            onManualSessionSave = {},
+            onManualNoteChange = {},
+            onManualSessionSave = { true },
             onManualSessionCancel = {},
             onAbsenceDateChange = {},
             onAbsenceEndDateChange = {},
             onAbsenceTypeSelect = {},
             onAbsenceHoursChange = {},
             onAbsenceNoteChange = {},
-            onAbsenceSave = {},
+            onAbsenceSave = { true },
             onAbsenceDelete = {},
             onSessionEdit = {},
             onSessionDelete = {},
@@ -6106,6 +6542,7 @@ private fun ClockedOutPreview() {
             onClockInReminderToggle = {},
             onClockInReminderTimeChange = {},
             onClockOutReminderToggle = {},
+            onActiveSessionNoteChange = {},
         )
     }
 }
@@ -6166,14 +6603,15 @@ private fun ClockedInPreview() {
             onManualDateChange = {},
             onManualClockInChange = {},
             onManualClockOutChange = {},
-            onManualSessionSave = {},
+            onManualNoteChange = {},
+            onManualSessionSave = { true },
             onManualSessionCancel = {},
             onAbsenceDateChange = {},
             onAbsenceEndDateChange = {},
             onAbsenceTypeSelect = {},
             onAbsenceHoursChange = {},
             onAbsenceNoteChange = {},
-            onAbsenceSave = {},
+            onAbsenceSave = { true },
             onAbsenceDelete = {},
             onSessionEdit = {},
             onSessionDelete = {},
@@ -6197,6 +6635,7 @@ private fun ClockedInPreview() {
             onClockInReminderToggle = {},
             onClockInReminderTimeChange = {},
             onClockOutReminderToggle = {},
+            onActiveSessionNoteChange = {},
         )
     }
 }
