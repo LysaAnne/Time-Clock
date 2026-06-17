@@ -26,6 +26,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -102,7 +103,9 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
 import java.time.temporal.TemporalAdjusters
+import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -135,6 +138,13 @@ class MainActivity : ComponentActivity() {
                     onTodayOvertimeStartDateChange = viewModel::updateTodayOvertimeStartDate,
                     onTodayOvertimeEndDateChange = viewModel::updateTodayOvertimeEndDate,
                     onInsightsSectionSelect = viewModel::selectInsightsSection,
+                    onChartMonthChange = viewModel::updateChartMonth,
+                    onTrendStartDateChange = viewModel::updateTrendStartDate,
+                    onTrendSettingsChange = viewModel::updateTrendSettings,
+                    onDailyChartEndDateChange = viewModel::updateDailyChartEndDate,
+                    onDailyChartDayCountChange = viewModel::updateDailyChartDayCount,
+                    onChartVisibilityChange = viewModel::updateChartVisibility,
+                    onChartMove = viewModel::moveChart,
                     onExportExpandToggle = viewModel::toggleExportExpanded,
                     onProfileSelect = viewModel::selectProfile,
                     onProfileNameChange = viewModel::updateActiveProfileName,
@@ -387,7 +397,16 @@ data class TimeClockUiState(
     val clockOutReminderEnabled: Boolean = false,
     val clockOutReminderSentMask: Int = 0,
     val reminderSettingsError: String? = null,
-    val selectedInsightsSection: InsightsSection = InsightsSection.SUMMARY,
+    val selectedInsightsSection: InsightsSection = InsightsSection.CHARTS,
+    val selectedChartMonthStart: LocalDate = LocalDate.now().withDayOfMonth(1),
+    val selectedTrendStartDate: LocalDate = rollingTrendStartDate(DEFAULT_TREND_WEEK_COUNT),
+    val selectedTrendMode: TrendStartMode = TrendStartMode.ROLLING_TO_TODAY,
+    val selectedTrendWeekCount: Int = DEFAULT_TREND_WEEK_COUNT,
+    val selectedTrendStartDay: DayOfWeek = DayOfWeek.MONDAY,
+    val selectedDailyEndDate: LocalDate = LocalDate.now(),
+    val selectedDailyDayCount: Int = DEFAULT_DAILY_CHART_DAY_COUNT,
+    val visibleChartIds: Set<ChartId> = ChartId.entries.toSet(),
+    val chartOrder: List<ChartId> = ChartId.entries.toList(),
     val isExportExpanded: Boolean = false,
     val exportOptions: ExportOptions = ExportOptions(),
     val exportRangeMode: ExportRangeMode = ExportRangeMode.ALL_REGISTERED,
@@ -432,9 +451,10 @@ enum class AbsenceType(
     val label: String,
     val coversExpectedHours: Boolean,
 ) {
-    VACATION("Holiday", true),
+    VACATION("Vacation", true),
     SICK_DAY("Sick day", true),
-    NO_WORK("No work", true),
+    PUBLIC_HOLIDAY("Public holiday", true),
+    NO_WORK("Other absence", true),
 }
 
 data class WorkReport(
@@ -446,6 +466,27 @@ data class WorkReport(
 ) {
     val balanceDuration: Duration = actualDuration.minus(expectedDuration)
 }
+
+data class AbsenceReportRow(
+    val label: String,
+    val vacationDays: Int,
+    val sickDays: Int,
+    val publicHolidayDays: Int,
+    val noWorkDays: Int,
+)
+
+data class AverageDayLengthRow(
+    val label: String,
+    val averageDuration: Duration,
+    val daysCounted: Int,
+)
+
+data class StartEndConsistencyRow(
+    val label: String,
+    val typicalStartTime: LocalTime?,
+    val typicalEndTime: LocalTime?,
+    val sessionsCounted: Int,
+)
 
 data class EarningsRow(
     val label: String,
@@ -556,15 +597,24 @@ data class DailyChartEntry(
 
 data class MonthlyTrendEntry(
     val label: String,
+    val startDate: LocalDate,
+    val endDate: LocalDate,
     val balanceDuration: Duration,
+    val hasRegisteredTime: Boolean,
 )
 
 data class CalendarDayVisual(
     val date: LocalDate,
     val actualDuration: Duration,
     val expectedDuration: Duration,
+    val absence: AbsenceEntry? = null,
+    val notes: List<String> = emptyList(),
 ) {
     val status: DayVisualStatus = when {
+        absence?.type == AbsenceType.VACATION -> DayVisualStatus.HOLIDAY
+        absence?.type == AbsenceType.SICK_DAY -> DayVisualStatus.SICK_DAY
+        absence?.type == AbsenceType.PUBLIC_HOLIDAY -> DayVisualStatus.PUBLIC_HOLIDAY
+        absence?.type == AbsenceType.NO_WORK -> DayVisualStatus.NO_WORK
         expectedDuration == Duration.ZERO && actualDuration == Duration.ZERO -> DayVisualStatus.NO_TARGET
         expectedDuration == Duration.ZERO -> DayVisualStatus.OVERTIME
         actualDuration < expectedDuration -> DayVisualStatus.MISSING
@@ -573,7 +623,31 @@ data class CalendarDayVisual(
     }
 }
 
+data class WeekdayPatternEntry(
+    val dayOfWeek: DayOfWeek,
+    val averageDuration: Duration,
+    val averageTargetDuration: Duration,
+    val daysCounted: Int,
+)
+
+data class PeriodPatternEntry(
+    val label: String,
+    val averageDuration: Duration,
+    val averageTargetDuration: Duration,
+    val daysCounted: Int,
+)
+
+data class WorkPatternData(
+    val weekdayEntries: List<WeekdayPatternEntry>,
+    val monthEntries: List<PeriodPatternEntry>,
+    val yearEntries: List<PeriodPatternEntry>,
+)
+
 enum class DayVisualStatus {
+    HOLIDAY,
+    SICK_DAY,
+    PUBLIC_HOLIDAY,
+    NO_WORK,
     MISSING,
     ON_TARGET,
     OVERTIME,
@@ -596,9 +670,26 @@ enum class AppTab(
 }
 
 enum class InsightsSection(val label: String) {
-    SUMMARY("Summary"),
     CHARTS("Charts"),
+    SUMMARY("Reports"),
     EXPORT("Export"),
+}
+
+enum class TrendStartMode(val label: String) {
+    ROLLING_TO_TODAY("Back from today"),
+    FIXED_WEEKDAY("Fixed weekday"),
+}
+
+enum class ChartId(val label: String) {
+    DAILY("Daily overview"),
+    TREND("Weekly overview"),
+    MONTHLY("Monthly overview"),
+    WORK_PATTERN("Work pattern"),
+}
+
+private enum class DailyBarLabelMode {
+    BALANCE,
+    SIGN_ONLY,
 }
 
 class TimeClockViewModel(application: Application) : AndroidViewModel(application) {
@@ -622,6 +713,72 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun selectInsightsSection(section: InsightsSection) {
         _uiState.value = _uiState.value.copy(selectedInsightsSection = section)
+    }
+
+    fun updateChartMonth(monthStart: LocalDate) {
+        _uiState.value = _uiState.value.copy(selectedChartMonthStart = monthStart.withDayOfMonth(1))
+    }
+
+    fun updateTrendStartDate(startDate: LocalDate) {
+        val state = _uiState.value
+        val normalizedStartDate = if (state.selectedTrendMode == TrendStartMode.FIXED_WEEKDAY) {
+            startDate.with(TemporalAdjusters.previousOrSame(state.selectedTrendStartDay))
+        } else {
+            startDate
+        }
+        _uiState.value = _uiState.value.copy(
+            selectedTrendStartDate = normalizedStartDate,
+        )
+    }
+
+    fun updateTrendSettings(
+        mode: TrendStartMode,
+        weekCount: Int,
+        startDay: DayOfWeek,
+    ) {
+        val safeWeekCount = weekCount.coerceIn(MIN_TREND_WEEK_COUNT, MAX_TREND_WEEK_COUNT)
+        val today = LocalDate.now()
+        val startDate = when (mode) {
+            TrendStartMode.ROLLING_TO_TODAY -> rollingTrendStartDate(safeWeekCount, today)
+            TrendStartMode.FIXED_WEEKDAY -> today
+                .with(TemporalAdjusters.previousOrSame(startDay))
+                .minusWeeks((safeWeekCount - 1).toLong())
+        }
+        _uiState.value = _uiState.value.copy(
+            selectedTrendMode = mode,
+            selectedTrendWeekCount = safeWeekCount,
+            selectedTrendStartDay = startDay,
+            selectedTrendStartDate = startDate,
+        )
+    }
+
+    fun updateDailyChartEndDate(endDate: LocalDate) {
+        _uiState.value = _uiState.value.copy(selectedDailyEndDate = endDate)
+    }
+
+    fun updateDailyChartDayCount(dayCount: Int) {
+        _uiState.value = _uiState.value.copy(
+            selectedDailyDayCount = dayCount.coerceIn(MIN_DAILY_CHART_DAY_COUNT, MAX_DAILY_CHART_DAY_COUNT),
+        )
+    }
+
+    fun updateChartVisibility(chartId: ChartId, isVisible: Boolean) {
+        val visibleCharts = if (isVisible) {
+            _uiState.value.visibleChartIds + chartId
+        } else {
+            _uiState.value.visibleChartIds - chartId
+        }
+        _uiState.value = _uiState.value.copy(visibleChartIds = visibleCharts)
+    }
+
+    fun moveChart(chartId: ChartId, direction: Int) {
+        val order = _uiState.value.chartOrder.toMutableList()
+        val index = order.indexOf(chartId)
+        val targetIndex = (index + direction).coerceIn(0, order.lastIndex)
+        if (index == -1 || index == targetIndex) return
+        order.removeAt(index)
+        order.add(targetIndex, chartId)
+        _uiState.value = _uiState.value.copy(chartOrder = order)
     }
 
     fun toggleExportExpanded() {
@@ -2062,9 +2219,7 @@ class TimeClockViewModel(application: Application) : AndroidViewModel(applicatio
                     ?: return@mapNotNull null
                 val type = parts.getOrNull(1)
                     ?.let { value ->
-                        if (value == "PUBLIC_HOLIDAY") {
-                            AbsenceType.VACATION
-                        } else if (value == "TIME_OFF") {
+                        if (value == "TIME_OFF") {
                             AbsenceType.NO_WORK
                         } else {
                             runCatching { AbsenceType.valueOf(value) }.getOrNull()
@@ -2438,6 +2593,13 @@ fun TimeClockScreen(
     onTodayOvertimeStartDateChange: (String) -> Unit,
     onTodayOvertimeEndDateChange: (String) -> Unit,
     onInsightsSectionSelect: (InsightsSection) -> Unit,
+    onChartMonthChange: (LocalDate) -> Unit,
+    onTrendStartDateChange: (LocalDate) -> Unit,
+    onTrendSettingsChange: (TrendStartMode, Int, DayOfWeek) -> Unit,
+    onDailyChartEndDateChange: (LocalDate) -> Unit,
+    onDailyChartDayCountChange: (Int) -> Unit,
+    onChartVisibilityChange: (ChartId, Boolean) -> Unit,
+    onChartMove: (ChartId, Int) -> Unit,
     onExportExpandToggle: () -> Unit,
     onProfileSelect: (String) -> Unit,
     onProfileNameChange: (String) -> Unit,
@@ -2566,6 +2728,13 @@ fun TimeClockScreen(
                 AppTab.INSIGHTS -> InsightsTab(
                     state = state,
                     onInsightsSectionSelect = onInsightsSectionSelect,
+                    onChartMonthChange = onChartMonthChange,
+                    onTrendStartDateChange = onTrendStartDateChange,
+                    onTrendSettingsChange = onTrendSettingsChange,
+                    onDailyChartEndDateChange = onDailyChartEndDateChange,
+                    onDailyChartDayCountChange = onDailyChartDayCountChange,
+                    onChartVisibilityChange = onChartVisibilityChange,
+                    onChartMove = onChartMove,
                     onOvertimeRangeChange = onOvertimeRangeChange,
                     onShareCsvText = onShareCsvText,
                     onShareCsvFile = onShareCsvFile,
@@ -2930,6 +3099,13 @@ private fun HistoryTab(
 private fun InsightsTab(
     state: TimeClockUiState,
     onInsightsSectionSelect: (InsightsSection) -> Unit,
+    onChartMonthChange: (LocalDate) -> Unit,
+    onTrendStartDateChange: (LocalDate) -> Unit,
+    onTrendSettingsChange: (TrendStartMode, Int, DayOfWeek) -> Unit,
+    onDailyChartEndDateChange: (LocalDate) -> Unit,
+    onDailyChartDayCountChange: (Int) -> Unit,
+    onChartVisibilityChange: (ChartId, Boolean) -> Unit,
+    onChartMove: (ChartId, Int) -> Unit,
     onOvertimeRangeChange: (OvertimeRange) -> Unit,
     onShareCsvText: () -> Unit,
     onShareCsvFile: () -> Unit,
@@ -2959,7 +3135,16 @@ private fun InsightsTab(
                     onOvertimeRangeChange = onOvertimeRangeChange,
                 )
             }
-            InsightsSection.CHARTS -> ChartsCard(state = state)
+            InsightsSection.CHARTS -> ChartsCard(
+                state = state,
+                onChartMonthChange = onChartMonthChange,
+                onTrendStartDateChange = onTrendStartDateChange,
+                onTrendSettingsChange = onTrendSettingsChange,
+                onDailyChartEndDateChange = onDailyChartEndDateChange,
+                onDailyChartDayCountChange = onDailyChartDayCountChange,
+                onChartVisibilityChange = onChartVisibilityChange,
+                onChartMove = onChartMove,
+            )
             InsightsSection.EXPORT -> ExportCard(
                 state = state,
                 onShareCsvText = onShareCsvText,
@@ -3442,7 +3627,7 @@ private fun OvertimePreviewCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 TimeStamp(label = "Actual", value = formatHoursAndMinutes(balance.actualDuration))
-                TimeStamp(label = "Expected", value = formatHoursAndMinutes(balance.expectedDuration))
+                TimeStamp(label = "Target", value = formatHoursAndMinutes(balance.expectedDuration))
             }
         }
     }
@@ -4341,6 +4526,9 @@ private fun AbsenceTypeSelector(
 @Composable
 private fun ReportsCard(state: TimeClockUiState) {
     val reports = buildReports(state)
+    val absenceRows = buildAbsenceReportRows(state, reports)
+    val averageDayRows = buildAverageDayLengthRows(state, reports)
+    val startEndRows = buildStartEndConsistencyRows(state, reports)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -4358,6 +4546,33 @@ private fun ReportsCard(state: TimeClockUiState) {
             )
             reports.forEach { report ->
                 ReportRow(report = report)
+            }
+            ReportDivider()
+            Text(
+                text = "Absence overview",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            absenceRows.forEach { row ->
+                AbsenceReportRowView(row = row)
+            }
+            ReportDivider()
+            Text(
+                text = "Average day length",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            averageDayRows.forEach { row ->
+                AverageDayLengthRowView(row = row)
+            }
+            ReportDivider()
+            Text(
+                text = "Start/end time consistency",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            startEndRows.forEach { row ->
+                StartEndConsistencyRowView(row = row)
             }
         }
     }
@@ -4675,7 +4890,7 @@ private fun ReportRow(report: WorkReport) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "Expected ${formatHoursAndMinutes(report.expectedDuration)}",
+                text = "Target ${formatHoursAndMinutes(report.expectedDuration)}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -4689,48 +4904,319 @@ private fun ReportRow(report: WorkReport) {
 }
 
 @Composable
-private fun ChartsCard(state: TimeClockUiState) {
-    val dailyEntries = buildDailyChartEntries(state)
-    val weekReport = buildCurrentWeekReport(state)
-    val monthlyTrend = buildMonthlyTrendEntries(state)
-    val calendarDays = buildCalendarVisualDays(state)
+private fun ReportDivider() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(Color(0xFFE5E7EB)),
+    )
+}
 
-    Card(
+@Composable
+private fun AbsenceReportRowView(row: AbsenceReportRow) {
+    ReportMetricRow(
+        label = row.label,
+        value = "${row.vacationDays + row.sickDays + row.publicHolidayDays + row.noWorkDays} days",
+        detail = "Vacation ${row.vacationDays} | Sick ${row.sickDays} | Public holiday ${row.publicHolidayDays} | Other absence ${row.noWorkDays}",
+    )
+}
+
+@Composable
+private fun AverageDayLengthRowView(row: AverageDayLengthRow) {
+    ReportMetricRow(
+        label = row.label,
+        value = if (row.daysCounted > 0) formatHoursAndMinutes(row.averageDuration) else "No data",
+        detail = if (row.daysCounted > 0) "${row.daysCounted} worked days counted" else "No worked days in this period",
+    )
+}
+
+@Composable
+private fun StartEndConsistencyRowView(row: StartEndConsistencyRow) {
+    val value = if (row.typicalStartTime != null && row.typicalEndTime != null) {
+        "${formatLocalTime(row.typicalStartTime)} - ${formatLocalTime(row.typicalEndTime)}"
+    } else {
+        "No data"
+    }
+    val detail = if (row.sessionsCounted > 0) {
+        "${row.sessionsCounted} sessions counted"
+    } else {
+        "No completed sessions in this period"
+    }
+
+    ReportMetricRow(
+        label = row.label,
+        value = value,
+        detail = detail,
+    )
+}
+
+@Composable
+private fun ReportMetricRow(
+    label: String,
+    value: String,
+    detail: String,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+        Text(
+            text = detail,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun ChartsCard(
+    state: TimeClockUiState,
+    onChartMonthChange: (LocalDate) -> Unit,
+    onTrendStartDateChange: (LocalDate) -> Unit,
+    onTrendSettingsChange: (TrendStartMode, Int, DayOfWeek) -> Unit,
+    onDailyChartEndDateChange: (LocalDate) -> Unit,
+    onDailyChartDayCountChange: (Int) -> Unit,
+    onChartVisibilityChange: (ChartId, Boolean) -> Unit,
+    onChartMove: (ChartId, Int) -> Unit,
+) {
+    val dailyEntries = buildDailyChartEntries(state)
+    val trendEntries = buildFourWeekTrendEntries(state)
+    val calendarDays = buildCalendarVisualDays(state, state.selectedChartMonthStart)
+    val workPatternData = buildWorkPatternData(state)
+    var showChartSettings by remember { mutableStateOf(false) }
+
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 text = "Charts",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
-            DailyHoursChart(entries = dailyEntries)
-            WeeklyProgressChart(report = weekReport)
-            MonthlyTrendChart(entries = monthlyTrend)
-            CalendarVisualGrid(days = calendarDays)
+            IconButton(onClick = { showChartSettings = true }) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Chart settings",
+                )
+            }
+        }
+        state.chartOrder.filter { it in state.visibleChartIds }.forEach { chartId ->
+            ChartSectionCard {
+                when (chartId) {
+                    ChartId.DAILY -> DailyOverviewChart(
+                        entries = dailyEntries,
+                        endDate = state.selectedDailyEndDate,
+                        dayCount = state.selectedDailyDayCount,
+                        onEndDateChange = onDailyChartEndDateChange,
+                        onDayCountChange = onDailyChartDayCountChange,
+                    )
+                    ChartId.TREND -> FourWeekTrendChart(
+                        startDate = state.selectedTrendStartDate,
+                        weekCount = state.selectedTrendWeekCount,
+                        mode = state.selectedTrendMode,
+                        startDay = state.selectedTrendStartDay,
+                        entries = trendEntries,
+                        onTrendStartDateChange = onTrendStartDateChange,
+                        onTrendSettingsChange = onTrendSettingsChange,
+                    )
+                    ChartId.MONTHLY -> CalendarVisualGrid(
+                        monthStart = state.selectedChartMonthStart,
+                        days = calendarDays,
+                        onMonthChange = onChartMonthChange,
+                    )
+                    ChartId.WORK_PATTERN -> WorkPatternHeatmap(data = workPatternData)
+                }
+            }
+        }
+    }
+
+    if (showChartSettings) {
+        ChartSettingsDialog(
+            chartOrder = state.chartOrder,
+            visibleChartIds = state.visibleChartIds,
+            onVisibilityChange = onChartVisibilityChange,
+            onMove = onChartMove,
+            onDismiss = { showChartSettings = false },
+        )
+    }
+}
+
+@Composable
+private fun ChartSectionCard(content: @Composable () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+        ) {
+            content()
         }
     }
 }
 
 @Composable
-private fun DailyHoursChart(entries: List<DailyChartEntry>) {
+private fun ChartSettingsDialog(
+    chartOrder: List<ChartId>,
+    visibleChartIds: Set<ChartId>,
+    onVisibilityChange: (ChartId, Boolean) -> Unit,
+    onMove: (ChartId, Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = "Chart settings") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                chartOrder.forEachIndexed { index, chartId ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Checkbox(
+                            checked = chartId in visibleChartIds,
+                            onCheckedChange = { checked -> onVisibilityChange(chartId, checked) },
+                        )
+                        Text(
+                            text = chartId.label,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        TextButton(
+                            onClick = { onMove(chartId, -1) },
+                            enabled = index > 0,
+                        ) {
+                            Text(text = "Up")
+                        }
+                        TextButton(
+                            onClick = { onMove(chartId, 1) },
+                            enabled = index < chartOrder.lastIndex,
+                        ) {
+                            Text(text = "Down")
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text(text = "Done")
+            }
+        },
+    )
+}
+
+@Composable
+private fun DailyOverviewChart(
+    entries: List<DailyChartEntry>,
+    endDate: LocalDate,
+    dayCount: Int,
+    onEndDateChange: (LocalDate) -> Unit,
+    onDayCountChange: (Int) -> Unit,
+) {
+    val context = LocalContext.current
+    var selectedEntry by remember { mutableStateOf<DailyChartEntry?>(null) }
+    var showSettings by remember { mutableStateOf(false) }
+    val startDate = endDate.minusDays((dayCount - 1).toLong())
+    val totalBalance = entries
+        .filter { it.actualDuration > Duration.ZERO || it.expectedDuration > Duration.ZERO }
+        .fold(Duration.ZERO) { total, entry -> total.plus(entry.balanceDuration) }
     val maxMinutes = entries
         .flatMap { listOf(it.actualDuration.toMinutes(), it.expectedDuration.toMinutes()) }
         .maxOrNull()
         ?.coerceAtLeast(60L)
         ?: 60L
-
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            text = "Last 7 days",
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.SemiBold,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Daily overview",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                )
+                Text(
+                    text = "${formatDotDate(startDate)} to ${formatDotDate(endDate)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = { showSettings = true }) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Daily overview settings",
+                )
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = { onEndDateChange(LocalDate.now()) }) {
+                Text(text = "Today")
+            }
+            IconButton(
+                onClick = { onEndDateChange(endDate.minusDays(1)) },
+                modifier = Modifier.width(44.dp),
+            ) {
+                Text(text = "<", fontWeight = FontWeight.Bold)
+            }
+            TextButton(
+                onClick = {
+                    DatePickerDialog(
+                        context,
+                        { _, year, month, day ->
+                            onEndDateChange(LocalDate.of(year, month + 1, day).plusDays((dayCount - 1).toLong()))
+                        },
+                        startDate.year,
+                        startDate.monthValue - 1,
+                        startDate.dayOfMonth,
+                    ).show()
+                },
+                modifier = Modifier.width(132.dp),
+            ) {
+                Text(text = "Pick start date")
+            }
+            IconButton(
+                onClick = { onEndDateChange(endDate.plusDays(1)) },
+                modifier = Modifier.width(44.dp),
+            ) {
+                Text(text = ">", fontWeight = FontWeight.Bold)
+            }
+        }
+        DailyOverviewLegend()
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -4742,10 +5228,46 @@ private fun DailyHoursChart(entries: List<DailyChartEntry>) {
                 DailyBar(
                     entry = entry,
                     maxMinutes = maxMinutes,
+                    labelMode = if (dayCount > DEFAULT_DAILY_CHART_DAY_COUNT) DailyBarLabelMode.SIGN_ONLY else DailyBarLabelMode.BALANCE,
+                    onClick = { selectedEntry = entry },
                     modifier = Modifier.weight(1f),
                 )
             }
         }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Total overtime",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = formatSignedBalance(totalBalance),
+                style = MaterialTheme.typography.bodyMedium,
+                color = signedDurationColor(totalBalance),
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+
+    if (showSettings) {
+        DailyOverviewSettingsDialog(
+            dayCount = dayCount,
+            onSave = {
+                onDayCountChange(it)
+                showSettings = false
+            },
+            onDismiss = { showSettings = false },
+        )
+    }
+    selectedEntry?.let { entry ->
+        DailyEntryDetailsDialog(
+            entry = entry,
+            onDismiss = { selectedEntry = null },
+        )
     }
 }
 
@@ -4753,11 +5275,28 @@ private fun DailyHoursChart(entries: List<DailyChartEntry>) {
 private fun DailyBar(
     entry: DailyChartEntry,
     maxMinutes: Long,
+    labelMode: DailyBarLabelMode,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val actualFraction = (entry.actualDuration.toMinutes().toFloat() / maxMinutes).coerceIn(0.02f, 1f)
-    val expectedFraction = (entry.expectedDuration.toMinutes().toFloat() / maxMinutes).coerceIn(0f, 1f)
-    val barColor = colorForBalance(entry.balanceDuration, entry.expectedDuration)
+    val hasData = entry.actualDuration > Duration.ZERO
+    val actualFraction = if (hasData) {
+        (entry.actualDuration.toMinutes().toFloat() / maxMinutes).coerceIn(0.02f, 1f)
+    } else {
+        0f
+    }
+    val expectedLineFraction = entry.expectedDuration
+        .toMinutes()
+        .takeIf { it > 0L }
+        ?.let { (it.toFloat() / maxMinutes).coerceIn(0f, 1f) }
+        ?: 0f
+    val barColor = if (hasData) chartBalanceColor(entry.balanceDuration, entry.expectedDuration) else Color(0xFF9CA3AF)
+    val balanceColor = when {
+        !hasData -> Color(0xFF9CA3AF)
+        entry.balanceDuration.isNegative -> Color(0xFFB42318)
+        entry.balanceDuration > Duration.ZERO -> Color(0xFF0F766E)
+        else -> Color(0xFF0F766E)
+    }
 
     Column(
         modifier = modifier,
@@ -4767,41 +5306,162 @@ private fun DailyBar(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(94.dp),
+                .height(94.dp)
+                .background(Color(0xFFE5E7EB), RoundedCornerShape(6.dp))
+                .clickable(onClick = onClick),
             contentAlignment = Alignment.BottomCenter,
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(expectedFraction)
-                    .background(Color(0xFFE5E7EB), RoundedCornerShape(6.dp)),
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(actualFraction)
-                    .background(barColor, RoundedCornerShape(6.dp)),
-            )
+            if (hasData) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(actualFraction)
+                        .background(barColor, RoundedCornerShape(6.dp)),
+                )
+            }
+            if (expectedLineFraction > 0f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(expectedLineFraction)
+                        .align(Alignment.BottomCenter),
+                    contentAlignment = Alignment.TopCenter,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp)
+                            .background(Color(0xFF111827), RoundedCornerShape(999.dp)),
+                    )
+                }
+            }
         }
         Text(
-            text = entry.date.dayOfWeek.shortLabel(),
+            text = if (labelMode == DailyBarLabelMode.SIGN_ONLY) {
+                entry.date.dayOfWeek.shortLabel().first().toString()
+            } else {
+                entry.date.dayOfWeek.shortLabel()
+            },
             style = MaterialTheme.typography.labelMedium,
             textAlign = TextAlign.Center,
         )
-        Text(
-            text = formatDurationShort(entry.actualDuration),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
+        if (hasData) {
+            Text(
+                text = when (labelMode) {
+                    DailyBarLabelMode.BALANCE -> formatSignedClockBalance(entry.balanceDuration)
+                    DailyBarLabelMode.SIGN_ONLY -> dailyBalanceSymbol(entry.balanceDuration)
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = balanceColor,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        } else {
+            Spacer(modifier = Modifier.height(16.dp))
+        }
     }
 }
 
 @Composable
-private fun WeeklyProgressChart(report: WorkReport) {
-    val expectedMinutes = report.expectedDuration.toMinutes().coerceAtLeast(1L)
-    val progress = (report.actualDuration.toMinutes().toFloat() / expectedMinutes).coerceIn(0f, 1f)
-    val progressColor = colorForBalance(report.balanceDuration, report.expectedDuration)
+private fun DailyOverviewLegend() {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LegendDot(color = Color(0xFF111827), label = "Daily target", modifier = Modifier.weight(1f))
+        LegendDot(color = Color(0xFF0F766E), label = "Overtime", modifier = Modifier.weight(1f))
+        LegendDot(color = Color(0xFFB42318), label = "Undertime", modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun DailyOverviewSettingsDialog(
+    dayCount: Int,
+    onSave: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selectedDayCount by remember { mutableStateOf(dayCount.coerceIn(MIN_DAILY_CHART_DAY_COUNT, MAX_DAILY_CHART_DAY_COUNT)) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = "Daily overview settings") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "Days to show",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                listOf(7, 14, 30).forEach { value ->
+                    FilterChip(
+                        selected = selectedDayCount == value,
+                        onClick = { selectedDayCount = value },
+                        label = { Text(text = "$value days") },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSave(selectedDayCount) }) {
+                Text(text = "Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = "Cancel")
+            }
+        },
+    )
+}
+
+@Composable
+private fun DailyEntryDetailsDialog(
+    entry: DailyChartEntry,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = formatDateInput(entry.date)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(text = "Actual ${formatHoursAndMinutes(entry.actualDuration)}")
+                Text(text = "Target ${formatHoursAndMinutes(entry.expectedDuration)}")
+                Text(
+                    text = "Balance ${formatSignedBalance(entry.balanceDuration)}",
+                    color = signedDurationColor(entry.balanceDuration),
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = "Close")
+            }
+        },
+    )
+}
+
+@Composable
+private fun FourWeekTrendChart(
+    startDate: LocalDate,
+    weekCount: Int,
+    mode: TrendStartMode,
+    startDay: DayOfWeek,
+    entries: List<MonthlyTrendEntry>,
+    onTrendStartDateChange: (LocalDate) -> Unit,
+    onTrendSettingsChange: (TrendStartMode, Int, DayOfWeek) -> Unit,
+) {
+    val context = LocalContext.current
+    var showSettings by remember { mutableStateOf(false) }
+    val totalBalance = entries
+        .filter { it.hasRegisteredTime }
+        .fold(Duration.ZERO) { total, entry -> total.plus(entry.balanceDuration) }
+    val maxMagnitude = entries
+        .maxOfOrNull { it.balanceDuration.abs().toMinutes() }
+        ?.coerceAtLeast(60L)
+        ?: 60L
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
@@ -4810,54 +5470,101 @@ private fun WeeklyProgressChart(report: WorkReport) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "This week",
+                    text = "Weekly overview",
+                modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                text = formatSignedBalance(report.balanceDuration),
-                style = MaterialTheme.typography.bodyMedium,
-                color = progressColor,
-                fontWeight = FontWeight.Medium,
-            )
+            IconButton(
+                onClick = { showSettings = true },
+                modifier = Modifier.width(44.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Trend settings",
+                )
+            }
         }
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(16.dp)
-                .background(Color(0xFFE5E7EB), RoundedCornerShape(8.dp)),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .fillMaxWidth(progress)
-                    .background(progressColor, RoundedCornerShape(8.dp)),
-            )
+            TextButton(
+                onClick = { onTrendStartDateChange(rollingTrendStartDate(weekCount)) },
+            ) {
+                Text(text = "This week")
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(
+                    onClick = { onTrendStartDateChange(startDate.minusWeeks(1)) },
+                    modifier = Modifier.width(44.dp),
+                ) {
+                    Text(text = "<", fontWeight = FontWeight.Bold)
+                }
+                TextButton(
+                    onClick = {
+                        DatePickerDialog(
+                            context,
+                            { _, year, month, day ->
+                                val selectedDate = LocalDate.of(year, month + 1, day)
+                                onTrendStartDateChange(selectedDate)
+                            },
+                            startDate.year,
+                            startDate.monthValue - 1,
+                            startDate.dayOfMonth,
+                        ).show()
+                    },
+                    modifier = Modifier.width(132.dp),
+                ) {
+                    Text(text = "Pick start date")
+                }
+                IconButton(
+                    onClick = { onTrendStartDateChange(startDate.plusWeeks(1)) },
+                    modifier = Modifier.width(44.dp),
+                ) {
+                    Text(text = ">", fontWeight = FontWeight.Bold)
+                }
+            }
         }
-        Text(
-            text = "${formatHoursAndMinutes(report.actualDuration)} of ${formatHoursAndMinutes(report.expectedDuration)}",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
-private fun MonthlyTrendChart(entries: List<MonthlyTrendEntry>) {
-    val maxMagnitude = entries
-        .maxOfOrNull { it.balanceDuration.abs().toMinutes() }
-        ?.coerceAtLeast(60L)
-        ?: 60L
-
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            text = "Monthly overtime trend",
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.SemiBold,
-        )
         entries.forEach { entry ->
             MonthlyTrendRow(entry = entry, maxMagnitude = maxMagnitude)
         }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Total overtime",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = formatSignedBalance(totalBalance),
+                style = MaterialTheme.typography.bodyMedium,
+                color = signedDurationColor(totalBalance),
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+
+    if (showSettings) {
+        TrendSettingsDialog(
+            mode = mode,
+            weekCount = weekCount,
+            startDay = startDay,
+            onSave = { selectedMode, selectedWeekCount, selectedStartDay ->
+                onTrendSettingsChange(selectedMode, selectedWeekCount, selectedStartDay)
+                showSettings = false
+            },
+            onDismiss = { showSettings = false },
+        )
     }
 }
 
@@ -4866,85 +5573,456 @@ private fun MonthlyTrendRow(
     entry: MonthlyTrendEntry,
     maxMagnitude: Long,
 ) {
-    val magnitude = (entry.balanceDuration.abs().toMinutes().toFloat() / maxMagnitude).coerceIn(0.04f, 1f)
-    val barColor = colorForBalance(entry.balanceDuration, Duration.ZERO)
+    val magnitude = if (entry.hasRegisteredTime) {
+        (entry.balanceDuration.abs().toMinutes().toFloat() / maxMagnitude).coerceIn(0.04f, 1f)
+    } else {
+        0f
+    }
+    val barColor = trendColor(entry)
 
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text(
-            text = entry.label,
-            modifier = Modifier.width(48.dp),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .height(10.dp)
-                .background(Color(0xFFE5E7EB), RoundedCornerShape(5.dp)),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            Text(
+                text = entry.label,
+                modifier = Modifier.width(32.dp),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
             Box(
                 modifier = Modifier
-                    .fillMaxHeight()
-                    .fillMaxWidth(magnitude)
-                    .background(barColor, RoundedCornerShape(5.dp)),
+                    .weight(1f)
+                    .height(12.dp)
+                    .background(Color(0xFFE5E7EB), RoundedCornerShape(6.dp)),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(magnitude)
+                        .background(barColor, RoundedCornerShape(6.dp)),
+                )
+            }
+            Text(
+                text = if (entry.hasRegisteredTime) formatSignedBalance(entry.balanceDuration) else "No data",
+                modifier = Modifier.width(72.dp),
+                style = MaterialTheme.typography.labelMedium,
+                textAlign = TextAlign.End,
+                color = barColor,
+                fontWeight = FontWeight.Medium,
             )
         }
-        Text(
-            text = formatSignedBalance(entry.balanceDuration),
-            modifier = Modifier.width(72.dp),
-            style = MaterialTheme.typography.labelMedium,
-            textAlign = TextAlign.End,
-            color = barColor,
-            fontWeight = FontWeight.Medium,
-        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 40.dp),
+        ) {
+            Text(
+                text = formatWeekRangeLabel(entry.startDate, entry.endDate),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
 @Composable
-private fun CalendarVisualGrid(days: List<CalendarDayVisual>) {
+private fun TrendSettingsDialog(
+    mode: TrendStartMode,
+    weekCount: Int,
+    startDay: DayOfWeek,
+    onSave: (TrendStartMode, Int, DayOfWeek) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selectedMode by remember { mutableStateOf(mode) }
+    var selectedWeekCount by remember { mutableStateOf(weekCount.coerceIn(MIN_TREND_WEEK_COUNT, MAX_TREND_WEEK_COUNT)) }
+    var selectedStartDay by remember { mutableStateOf(startDay) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = "Trend settings") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = "Period start",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    TrendStartMode.entries.forEach { option ->
+                        FilterChip(
+                            selected = selectedMode == option,
+                            onClick = { selectedMode = option },
+                            label = { Text(text = option.label) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                if (selectedMode == TrendStartMode.FIXED_WEEKDAY) {
+                    Text(
+                        text = "Start weekday",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    listOf(WORK_DAYS_ROW_ONE, WORK_DAYS_ROW_TWO).forEach { days ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            days.forEach { day ->
+                                FilterChip(
+                                    selected = selectedStartDay == day,
+                                    onClick = { selectedStartDay = day },
+                                    label = { Text(text = day.shortLabel()) },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                    }
+                }
+                Text(
+                    text = "Weeks to show",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                (MIN_TREND_WEEK_COUNT..MAX_TREND_WEEK_COUNT).chunked(4).forEach { rowValues ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        rowValues.forEach { value ->
+                            FilterChip(
+                                selected = selectedWeekCount == value,
+                                onClick = { selectedWeekCount = value },
+                                label = { Text(text = value.toString()) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSave(selectedMode, selectedWeekCount, selectedStartDay) }) {
+                Text(text = "Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = "Cancel")
+            }
+        },
+    )
+}
+
+@Composable
+private fun CalendarVisualGrid(
+    monthStart: LocalDate,
+    days: List<CalendarDayVisual>,
+    onMonthChange: (LocalDate) -> Unit,
+) {
+    val context = LocalContext.current
+    var selectedDay by remember { mutableStateOf<CalendarDayVisual?>(null) }
+    val monthBalance = days.fold(Duration.ZERO) { total, day ->
+        total.plus(day.actualDuration.minus(day.expectedDuration))
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = "Monthly overview",
+            modifier = Modifier.fillMaxWidth(),
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = { onMonthChange(LocalDate.now().withDayOfMonth(1)) },
+            ) {
+                Text(
+                    text = "This month",
+                    maxLines = 1,
+                )
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(
+                    onClick = { onMonthChange(monthStart.minusMonths(1)) },
+                    modifier = Modifier.width(44.dp),
+                ) {
+                    Text(text = "<", fontWeight = FontWeight.Bold)
+                }
+                TextButton(
+                    onClick = {
+                        DatePickerDialog(
+                            context,
+                            { _, year, month, _ ->
+                                onMonthChange(LocalDate.of(year, month + 1, 1))
+                            },
+                            monthStart.year,
+                            monthStart.monthValue - 1,
+                            1,
+                        ).show()
+                    },
+                    modifier = Modifier.width(132.dp),
+                ) {
+                    Text(
+                        text = formatMonthLabel(monthStart),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                IconButton(
+                    onClick = { onMonthChange(monthStart.plusMonths(1)) },
+                    modifier = Modifier.width(44.dp),
+                ) {
+                    Text(text = ">", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            WEEKDAY_LABELS.forEach { label ->
+                Text(
+                    text = label,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelSmall,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        calendarGridDays(monthStart, days).chunked(7).forEach { week ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                week.forEach { day ->
+                    if (day == null) {
+                        Spacer(
+                            modifier = Modifier
+                                .weight(1f)
+                                .aspectRatio(1f),
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .aspectRatio(1f)
+                                .background(colorForDayStatus(day.status), RoundedCornerShape(6.dp))
+                                .clickable { selectedDay = day },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = day.date.dayOfMonth.toString(),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = colorForDayText(day.status),
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                if (day.notes.isNotEmpty()) {
+                                    Text(
+                                        text = "*",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = colorForDayText(day.status),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        CalendarLegend()
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "This month",
-                style = MaterialTheme.typography.bodyLarge,
+                text = "Total overtime",
+                style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
             )
-            CalendarLegend()
+            Text(
+                text = formatSignedBalance(monthBalance),
+                style = MaterialTheme.typography.bodyMedium,
+                color = signedDurationColor(monthBalance),
+                fontWeight = FontWeight.SemiBold,
+            )
         }
-        days.chunked(7).forEach { week ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                week.forEach { day ->
+    }
+
+    selectedDay?.let { day ->
+        CalendarDayDetailsDialog(
+            day = day,
+            onDismiss = { selectedDay = null },
+        )
+    }
+}
+
+private data class PatternBarItem(
+    val label: String,
+    val averageDuration: Duration,
+    val averageTargetDuration: Duration,
+    val daysCounted: Int,
+)
+
+@Composable
+private fun WorkPatternHeatmap(data: WorkPatternData) {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text(
+            text = "Work pattern",
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+        )
+        LegendDot(color = Color(0xFF111827), label = "Daily target")
+        PatternBarRow(
+            title = "Average by weekday",
+            items = data.weekdayEntries.map { entry ->
+                PatternBarItem(
+                    label = entry.dayOfWeek.shortLabel().first().toString(),
+                    averageDuration = entry.averageDuration,
+                    averageTargetDuration = entry.averageTargetDuration,
+                    daysCounted = entry.daysCounted,
+                )
+            },
+        )
+        PatternBarRow(
+            title = "Average by month",
+            items = data.monthEntries.map { entry ->
+                PatternBarItem(
+                    label = entry.label,
+                    averageDuration = entry.averageDuration,
+                    averageTargetDuration = entry.averageTargetDuration,
+                    daysCounted = entry.daysCounted,
+                )
+            },
+        )
+        PatternBarRow(
+            title = "Average by year",
+            items = data.yearEntries.map { entry ->
+                PatternBarItem(
+                    label = entry.label,
+                    averageDuration = entry.averageDuration,
+                    averageTargetDuration = entry.averageTargetDuration,
+                    daysCounted = entry.daysCounted,
+                )
+            },
+        )
+    }
+}
+
+@Composable
+private fun PatternBarRow(
+    title: String,
+    items: List<PatternBarItem>,
+) {
+    val maxMinutes = items
+        .flatMap { listOf(it.averageDuration.toMinutes(), it.averageTargetDuration.toMinutes()) }
+        .maxOrNull()
+        ?.coerceAtLeast(60L)
+        ?: 60L
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(116.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            items.forEach { item ->
+                val hasData = item.daysCounted > 0 && item.averageDuration > Duration.ZERO
+                val fraction = if (hasData) {
+                    (item.averageDuration.toMinutes().toFloat() / maxMinutes).coerceIn(0.04f, 1f)
+                } else {
+                    0f
+                }
+                val targetFraction = item.averageTargetDuration
+                    .toMinutes()
+                    .takeIf { it > 0L }
+                    ?.let { (it.toFloat() / maxMinutes).coerceIn(0f, 1f) }
+                    ?: 0f
+                Column(
+                    modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
                     Box(
                         modifier = Modifier
-                            .weight(1f)
-                            .aspectRatio(1f)
-                            .background(colorForDayStatus(day.status), RoundedCornerShape(6.dp)),
-                        contentAlignment = Alignment.Center,
+                            .fillMaxWidth()
+                            .height(72.dp)
+                            .background(Color(0xFFE5E7EB), RoundedCornerShape(6.dp)),
+                        contentAlignment = Alignment.BottomCenter,
                     ) {
-                        Text(
-                            text = day.date.dayOfMonth.toString(),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = colorForDayText(day.status),
-                            fontWeight = FontWeight.SemiBold,
-                        )
+                        if (hasData) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .fillMaxHeight(fraction)
+                                    .background(Color(0xFF0F766E), RoundedCornerShape(6.dp)),
+                            )
+                        }
+                        if (targetFraction > 0f) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .fillMaxHeight(targetFraction)
+                                    .align(Alignment.BottomCenter),
+                                contentAlignment = Alignment.TopCenter,
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(2.dp)
+                                        .background(Color(0xFF111827), RoundedCornerShape(999.dp)),
+                                )
+                            }
+                        }
                     }
-                }
-                repeat(7 - week.size) {
-                    Spacer(
-                        modifier = Modifier
-                            .weight(1f)
-                            .aspectRatio(1f),
+                    Text(
+                        text = item.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = if (hasData) formatDurationShort(item.averageDuration) else "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -4954,16 +6032,93 @@ private fun CalendarVisualGrid(days: List<CalendarDayVisual>) {
 
 @Composable
 private fun CalendarLegend() {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        LegendDot(color = Color(0xFFB42318), label = "Missing")
-        LegendDot(color = Color(0xFF0F766E), label = "OK")
-        LegendDot(color = Color(0xFF2563EB), label = "Over")
+    val legendItems = listOf(
+        Color(0xFF0F766E) to "Overtime",
+        Color(0xFFB42318) to "Undertime",
+        Color(0xFFF59E0B) to "Sick",
+        Color(0xFFA855F7) to "Vacation",
+        Color(0xFF4B5563) to "Public holiday",
+        Color(0xFF2563EB) to "Other absence",
+        Color(0xFFF3F4F6) to "No data",
+    )
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        legendItems.chunked(3).forEach { rowItems ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                rowItems.forEach { (color, label) ->
+                    LegendDot(
+                        color = color,
+                        label = label,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun LegendDot(color: Color, label: String) {
+private fun CalendarDayDetailsDialog(
+    day: CalendarDayVisual,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = formatDateInput(day.date)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(text = "Actual ${formatHoursAndMinutes(day.actualDuration)}")
+                Text(text = "Target ${formatHoursAndMinutes(day.expectedDuration)}")
+                Text(
+                    text = "Balance ${formatSignedBalance(day.actualDuration.minus(day.expectedDuration))}",
+                    color = signedDurationColor(day.actualDuration.minus(day.expectedDuration)),
+                    fontWeight = FontWeight.SemiBold,
+                )
+                day.absence?.let { absence ->
+                    Text(
+                        text = "Absence: ${absence.type.label}",
+                        color = colorForDayText(day.status),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                if (day.notes.isNotEmpty()) {
+                    Text(
+                        text = "Notes",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    day.notes.forEach { note ->
+                        Text(
+                            text = note,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = "Close")
+            }
+        },
+    )
+}
+
+@Composable
+private fun LegendDot(
+    color: Color,
+    label: String,
+    modifier: Modifier = Modifier,
+) {
     Row(
+        modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -5031,7 +6186,7 @@ private fun OvertimeBalanceCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 TimeStamp(label = "Actual", value = formatHoursAndMinutes(balance.actualDuration))
-                TimeStamp(label = "Expected", value = formatHoursAndMinutes(balance.expectedDuration))
+                TimeStamp(label = "Target", value = formatHoursAndMinutes(balance.expectedDuration))
                 TimeStamp(label = "Start", value = formatSignedBalance(balance.startingBalance))
             }
             Text(
@@ -5448,7 +6603,7 @@ private fun buildExportCsv(state: TimeClockUiState): String {
 
     if (state.exportOptions.includeReportSummaries) {
         row("Reports")
-        row("Period", "Start date", "End date", "Actual hours", "Expected hours", "Balance")
+        row("Period", "Start date", "End date", "Actual hours", "Target hours", "Balance")
         reports.forEach { report ->
             row(
                 report.label,
@@ -5464,7 +6619,7 @@ private fun buildExportCsv(state: TimeClockUiState): String {
 
     if (state.exportOptions.includeOvertimeBalance) {
         row("Overtime balance")
-        row("Period", "Start date", "End date", "Actual hours", "Expected hours", "Balance")
+        row("Period", "Start date", "End date", "Actual hours", "Target hours", "Balance")
         row(
             period.label,
             formatDateInput(period.startDate),
@@ -5647,7 +6802,7 @@ private fun buildExportPdfBytes(state: TimeClockUiState): ByteArray {
     y = 158f
 
     summaryCard(margin, "Worked", formatHoursAndMinutes(overtimeActual))
-    summaryCard(margin + 132f, "Expected", formatHoursAndMinutes(overtimeExpected))
+    summaryCard(margin + 132f, "Target", formatHoursAndMinutes(overtimeExpected))
     summaryCard(margin + 264f, "Balance", formatSignedBalance(exportBalance))
     summaryCard(margin + 396f, "Earnings", if (earningsRows.isEmpty()) "-" else formatMoney(earningsTotal, currency))
     y += 76f
@@ -5674,7 +6829,7 @@ private fun buildExportPdfBytes(state: TimeClockUiState): ByteArray {
         section("Report Summary")
         reports.forEach { report ->
             line(
-                "${report.label}: ${formatHoursAndMinutes(report.actualDuration)} worked, ${formatHoursAndMinutes(report.expectedDuration)} expected, ${formatSignedBalance(report.balanceDuration)}",
+                "${report.label}: ${formatHoursAndMinutes(report.actualDuration)} worked, ${formatHoursAndMinutes(report.expectedDuration)} target, ${formatSignedBalance(report.balanceDuration)}",
                 bodyPaint,
                 gap = 14f,
             )
@@ -5686,7 +6841,7 @@ private fun buildExportPdfBytes(state: TimeClockUiState): ByteArray {
         section("Overtime Balance")
         keyValue("Period", "${period.label}: ${formatDateInput(period.startDate)} to ${formatDateInput(period.endDate)}")
         keyValue("Actual", formatHoursAndMinutes(overtimeActual))
-        keyValue("Expected", formatHoursAndMinutes(overtimeExpected))
+        keyValue("Target", formatHoursAndMinutes(overtimeExpected))
         keyValue("Balance", formatSignedBalance(exportBalance))
     }
 
@@ -5849,7 +7004,7 @@ private fun formatProgressMessage(
     return when {
         balance.isNegative -> "You need ${formatDurationShort(balance.abs())} more today"
         balance == Duration.ZERO -> "You are exactly on target today"
-        else -> "You are ${formatDurationShort(balance)} ahead today"
+        else -> "You have ${formatDurationShort(balance)} overtime today"
     }
 }
 
@@ -5905,6 +7060,88 @@ private fun buildReports(state: TimeClockUiState): List<WorkReport> {
         buildReport("Half year", halfYearStart, halfYearEnd, state),
         buildReport("This year", yearStart, yearEnd, state),
     )
+}
+
+private fun buildAbsenceReportRows(
+    state: TimeClockUiState,
+    reports: List<WorkReport>,
+): List<AbsenceReportRow> {
+    return reports.map { report ->
+        val absences = state.absences.filter { absence ->
+            !absence.date.isBefore(report.startDate) && !absence.date.isAfter(report.endDate)
+        }
+
+        AbsenceReportRow(
+            label = report.label,
+            vacationDays = absences.count { it.type == AbsenceType.VACATION },
+            sickDays = absences.count { it.type == AbsenceType.SICK_DAY },
+            publicHolidayDays = absences.count { it.type == AbsenceType.PUBLIC_HOLIDAY },
+            noWorkDays = absences.count { it.type == AbsenceType.NO_WORK },
+        )
+    }
+}
+
+private fun buildAverageDayLengthRows(
+    state: TimeClockUiState,
+    reports: List<WorkReport>,
+): List<AverageDayLengthRow> {
+    return reports.map { report ->
+        val durations = dateSequence(report.startDate, report.endDate)
+            .map { date -> actualDurationForRange(date, date, state) }
+            .filter { duration -> duration > Duration.ZERO }
+            .toList()
+        val totalDuration = durations.fold(Duration.ZERO) { total, duration -> total.plus(duration) }
+        val averageDuration = if (durations.isNotEmpty()) {
+            Duration.ofMinutes(totalDuration.toMinutes() / durations.size)
+        } else {
+            Duration.ZERO
+        }
+
+        AverageDayLengthRow(
+            label = report.label,
+            averageDuration = averageDuration,
+            daysCounted = durations.size,
+        )
+    }
+}
+
+private fun buildStartEndConsistencyRows(
+    state: TimeClockUiState,
+    reports: List<WorkReport>,
+): List<StartEndConsistencyRow> {
+    val zoneId = ZoneId.systemDefault()
+    return reports.map { report ->
+        val rangeStart = report.startDate.atStartOfDay(zoneId).toInstant()
+        val rangeEnd = report.endDate.plusDays(1).atStartOfDay(zoneId).toInstant()
+        val sessions = state.completedSessions.filter { session ->
+            minOf(session.clockOut, rangeEnd) > maxOf(session.clockIn, rangeStart)
+        }
+        val averageStart = averageSessionTime(sessions.map { it.clockIn.atZone(zoneId).toLocalTime() })
+        val averageEnd = averageSessionTime(sessions.map { it.clockOut.atZone(zoneId).toLocalTime() })
+
+        StartEndConsistencyRow(
+            label = report.label,
+            typicalStartTime = averageStart,
+            typicalEndTime = averageEnd,
+            sessionsCounted = sessions.size,
+        )
+    }
+}
+
+private fun dateSequence(
+    startDate: LocalDate,
+    endDate: LocalDate,
+): Sequence<LocalDate> {
+    if (startDate.isAfter(endDate)) return emptySequence()
+    return generateSequence(startDate) { date ->
+        date.plusDays(1).takeUnless { it.isAfter(endDate) }
+    }
+}
+
+private fun averageSessionTime(times: List<LocalTime>): LocalTime? {
+    if (times.isEmpty()) return null
+    val averageSecondOfDay = times.sumOf { it.toSecondOfDay().toLong() } / times.size
+    return LocalTime.ofSecondOfDay(averageSecondOfDay)
 }
 
 private fun buildEarningsRows(state: TimeClockUiState): List<EarningsRow> {
@@ -6045,79 +7282,229 @@ private fun startDateForOvertimeRange(
 }
 
 private fun buildDailyChartEntries(state: TimeClockUiState): List<DailyChartEntry> {
-    val today = LocalDate.now()
-    return (6L downTo 0L).map { daysAgo ->
-        val date = today.minusDays(daysAgo)
-        val isBeforeTrackingStart = date.isBefore(state.activeProfile.trackingStartDate)
+    val dayCount = state.selectedDailyDayCount.coerceIn(MIN_DAILY_CHART_DAY_COUNT, MAX_DAILY_CHART_DAY_COUNT)
+    val endDate = state.selectedDailyEndDate
+    return ((dayCount - 1).toLong() downTo 0L).map { daysAgo ->
+        val date = endDate.minusDays(daysAgo)
+        val isOutsideTrackedRange = date.isBefore(state.activeProfile.trackingStartDate) || date.isAfter(LocalDate.now())
         DailyChartEntry(
             date = date,
-            actualDuration = if (isBeforeTrackingStart) Duration.ZERO else actualDurationForRange(date, date, state),
-            expectedDuration = if (isBeforeTrackingStart) Duration.ZERO else expectedDurationForRange(date, date, state),
+            actualDuration = if (isOutsideTrackedRange) Duration.ZERO else actualDurationForRange(date, date, state),
+            expectedDuration = if (isOutsideTrackedRange) Duration.ZERO else expectedDurationForRange(date, date, state),
         )
     }
 }
 
-private fun buildCurrentWeekReport(state: TimeClockUiState): WorkReport {
+private fun buildFourWeekTrendEntries(state: TimeClockUiState): List<MonthlyTrendEntry> {
     val today = LocalDate.now()
-    val weekStart = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-    val weekEnd = minOf(weekStart.plusDays(6), today)
-    return buildReport("This week", weekStart, weekEnd, state)
-}
-
-private fun buildMonthlyTrendEntries(state: TimeClockUiState): List<MonthlyTrendEntry> {
-    val today = LocalDate.now()
-    val monthStart = today.withDayOfMonth(1)
-    val monthEnd = today
-    val entries = mutableListOf<MonthlyTrendEntry>()
-    var weekStart = monthStart
-    var weekNumber = 1
-
-    while (!weekStart.isAfter(monthEnd)) {
-        val weekEnd = minOf(weekStart.plusDays(6), monthEnd)
+    return (0 until state.selectedTrendWeekCount.coerceIn(MIN_TREND_WEEK_COUNT, MAX_TREND_WEEK_COUNT)).map { index ->
+        val weekStart = state.selectedTrendStartDate.plusWeeks(index.toLong())
+        val weekEnd = weekStart.plusDays(6)
+        val calculationEnd = minOf(weekEnd, today)
         val effectiveWeekStart = weekStart.coerceAtLeast(state.activeProfile.trackingStartDate)
-        val actualDuration = if (effectiveWeekStart.isAfter(weekEnd)) {
+        val isFutureWeek = weekStart.isAfter(today)
+        val actualDuration = if (isFutureWeek || effectiveWeekStart.isAfter(calculationEnd)) {
             Duration.ZERO
         } else {
-            actualDurationForRange(effectiveWeekStart, weekEnd, state)
+            actualDurationForRange(effectiveWeekStart, calculationEnd, state)
         }
-        val expectedDuration = if (effectiveWeekStart.isAfter(weekEnd)) {
+        val expectedDuration = if (isFutureWeek || effectiveWeekStart.isAfter(calculationEnd)) {
             Duration.ZERO
         } else {
-            expectedDurationForRange(effectiveWeekStart, weekEnd, state)
+            expectedDurationForRange(effectiveWeekStart, calculationEnd, state)
         }
-        entries.add(
-            MonthlyTrendEntry(
-                label = "W$weekNumber",
-                balanceDuration = actualDuration.minus(expectedDuration),
-            ),
+        val hasRegisteredTime = !isFutureWeek && (actualDuration > Duration.ZERO || expectedDuration > Duration.ZERO ||
+            state.absences.any { !it.date.isBefore(weekStart) && !it.date.isAfter(weekEnd) }
         )
-        weekStart = weekEnd.plusDays(1)
-        weekNumber += 1
-    }
 
-    return entries
+        MonthlyTrendEntry(
+            label = "W${index + 1}",
+            startDate = weekStart,
+            endDate = weekEnd,
+            balanceDuration = actualDuration.minus(expectedDuration),
+            hasRegisteredTime = hasRegisteredTime,
+        )
+    }
 }
 
-private fun buildCalendarVisualDays(state: TimeClockUiState): List<CalendarDayVisual> {
+private fun buildCalendarVisualDays(
+    state: TimeClockUiState,
+    monthStart: LocalDate,
+): List<CalendarDayVisual> {
     val today = LocalDate.now()
-    val monthStart = today.withDayOfMonth(1)
-    val monthEnd = today.withDayOfMonth(today.lengthOfMonth())
+    val normalizedMonthStart = monthStart.withDayOfMonth(1)
+    val monthEnd = normalizedMonthStart.withDayOfMonth(normalizedMonthStart.lengthOfMonth())
     val days = mutableListOf<CalendarDayVisual>()
-    var date = monthStart
+    var date = normalizedMonthStart
+    val zoneId = ZoneId.systemDefault()
 
     while (!date.isAfter(monthEnd)) {
         val isOutsideTrackedRange = date.isBefore(state.activeProfile.trackingStartDate) || date.isAfter(today)
+        val sessionsOnDate = state.completedSessions.filter { session ->
+            sessionOverlapsDate(session, date, zoneId)
+        }
+        val activeSessionOnDate = state.clockInTime
+            ?.let { WorkSession(it, Instant.now(), note = state.activeSessionNoteInput.trim()) }
+            ?.takeIf { session -> sessionOverlapsDate(session, date, zoneId) }
+        val allSessionsOnDate = sessionsOnDate + listOfNotNull(activeSessionOnDate)
+        val absence = state.absences.firstOrNull { it.date == date }
+        val notes = buildList {
+            absence?.note
+                ?.takeIf { it.isNotBlank() }
+                ?.let { add("${absence.type.label}: $it") }
+            allSessionsOnDate
+                .mapNotNull { session -> session.note.takeIf { it.isNotBlank() } }
+                .forEach { add(it) }
+        }
         days.add(
             CalendarDayVisual(
                 date = date,
                 actualDuration = if (isOutsideTrackedRange) Duration.ZERO else actualDurationForRange(date, date, state),
                 expectedDuration = if (isOutsideTrackedRange) Duration.ZERO else expectedDurationForRange(date, date, state),
+                absence = absence,
+                notes = notes,
             ),
         )
         date = date.plusDays(1)
     }
 
     return days
+}
+
+private fun buildWorkPatternData(state: TimeClockUiState): WorkPatternData {
+    return WorkPatternData(
+        weekdayEntries = buildWeekdayPatternEntries(state),
+        monthEntries = buildMonthPatternEntries(state),
+        yearEntries = buildYearPatternEntries(state),
+    )
+}
+
+private fun buildWeekdayPatternEntries(state: TimeClockUiState): List<WeekdayPatternEntry> {
+    val today = LocalDate.now()
+    val startDate = today.minusWeeks(12).plusDays(1).coerceAtLeast(state.activeProfile.trackingStartDate)
+    if (startDate.isAfter(today)) {
+        return DayOfWeek.entries.map { day ->
+            WeekdayPatternEntry(
+                dayOfWeek = day,
+                averageDuration = Duration.ZERO,
+                averageTargetDuration = Duration.ZERO,
+                daysCounted = 0,
+            )
+        }
+    }
+    val durationsByDate = generateSequence(startDate) { date ->
+        date.plusDays(1).takeUnless { it.isAfter(today) }
+    }.associateWith { date ->
+        actualDurationForRange(date, date, state) to expectedDurationForRange(date, date, state)
+    }
+
+    return DayOfWeek.entries.map { day ->
+        val durationPairs = durationsByDate
+            .filterKeys { it.dayOfWeek == day }
+            .values
+            .toList()
+        val durations = durationPairs.map { it.first }
+        val targetDurations = durationPairs.map { it.second }
+        val totalDuration = durations.fold(Duration.ZERO) { total, duration -> total.plus(duration) }
+        val totalTargetDuration = targetDurations.fold(Duration.ZERO) { total, duration -> total.plus(duration) }
+        val averageDuration = if (durations.isNotEmpty()) {
+            Duration.ofMinutes(totalDuration.toMinutes() / durations.size)
+        } else {
+            Duration.ZERO
+        }
+        val averageTargetDuration = if (targetDurations.isNotEmpty()) {
+            Duration.ofMinutes(totalTargetDuration.toMinutes() / targetDurations.size)
+        } else {
+            Duration.ZERO
+        }
+
+        WeekdayPatternEntry(
+            dayOfWeek = day,
+            averageDuration = averageDuration,
+            averageTargetDuration = averageTargetDuration,
+            daysCounted = durations.count { it > Duration.ZERO },
+        )
+    }
+}
+
+private fun buildMonthPatternEntries(state: TimeClockUiState): List<PeriodPatternEntry> {
+    val today = LocalDate.now()
+    val firstMonth = today.minusMonths(11).withDayOfMonth(1)
+    return (0L..11L).map { monthOffset ->
+        val monthStart = firstMonth.plusMonths(monthOffset)
+        val monthEnd = monthStart.withDayOfMonth(monthStart.lengthOfMonth())
+        val effectiveStart = monthStart.coerceAtLeast(state.activeProfile.trackingStartDate)
+        val effectiveEnd = monthEnd.coerceAtMost(today)
+        val monthName = monthStart.month.getDisplayName(TextStyle.SHORT, Locale.getDefault())
+
+        buildPeriodPatternEntry(
+            label = monthName,
+            startDate = effectiveStart,
+            endDate = effectiveEnd,
+            state = state,
+        )
+    }
+}
+
+private fun buildYearPatternEntries(state: TimeClockUiState): List<PeriodPatternEntry> {
+    val today = LocalDate.now()
+    val startYear = maxOf(state.activeProfile.trackingStartDate.year, today.year - 4)
+    return (startYear..today.year).map { year ->
+        val yearStart = LocalDate.of(year, 1, 1)
+        val yearEnd = LocalDate.of(year, 12, 31)
+        val effectiveStart = yearStart.coerceAtLeast(state.activeProfile.trackingStartDate)
+        val effectiveEnd = yearEnd.coerceAtMost(today)
+
+        buildPeriodPatternEntry(
+            label = year.toString(),
+            startDate = effectiveStart,
+            endDate = effectiveEnd,
+            state = state,
+        )
+    }
+}
+
+private fun buildPeriodPatternEntry(
+    label: String,
+    startDate: LocalDate,
+    endDate: LocalDate,
+    state: TimeClockUiState,
+): PeriodPatternEntry {
+    if (startDate.isAfter(endDate)) {
+        return PeriodPatternEntry(
+            label = label,
+            averageDuration = Duration.ZERO,
+            averageTargetDuration = Duration.ZERO,
+            daysCounted = 0,
+        )
+    }
+    val durationPairs = generateSequence(startDate) { date ->
+        date.plusDays(1).takeUnless { it.isAfter(endDate) }
+    }.map { date ->
+        actualDurationForRange(date, date, state) to expectedDurationForRange(date, date, state)
+    }
+        .toList()
+    val durations = durationPairs.map { it.first }
+    val targetDurations = durationPairs.map { it.second }
+    val totalDuration = durations.fold(Duration.ZERO) { total, duration -> total.plus(duration) }
+    val totalTargetDuration = targetDurations.fold(Duration.ZERO) { total, duration -> total.plus(duration) }
+    val averageDuration = if (durations.isNotEmpty()) {
+        Duration.ofMinutes(totalDuration.toMinutes() / durations.size)
+    } else {
+        Duration.ZERO
+    }
+    val averageTargetDuration = if (targetDurations.isNotEmpty()) {
+        Duration.ofMinutes(totalTargetDuration.toMinutes() / targetDurations.size)
+    } else {
+        Duration.ZERO
+    }
+
+    return PeriodPatternEntry(
+        label = label,
+        averageDuration = averageDuration,
+        averageTargetDuration = averageTargetDuration,
+        daysCounted = durations.count { it > Duration.ZERO },
+    )
 }
 
 private fun buildReport(
@@ -6211,9 +7598,9 @@ private fun formatHistoryBalance(day: WorkDayHistory): String {
     }
 
     return when {
-        day.balanceDuration.isNegative -> "${formatHoursAndMinutes(day.balanceDuration.abs())} missing"
+        day.balanceDuration.isNegative -> "${formatHoursAndMinutes(day.balanceDuration.abs())} undertime"
         day.balanceDuration == Duration.ZERO -> "On target"
-        else -> "${formatHoursAndMinutes(day.balanceDuration)} ahead"
+        else -> "${formatHoursAndMinutes(day.balanceDuration)} overtime"
     }
 }
 
@@ -6223,9 +7610,9 @@ private fun formatReportBalance(report: WorkReport): String {
     }
 
     return when {
-        report.balanceDuration.isNegative -> "${formatHoursAndMinutes(report.balanceDuration.abs())} missing"
+        report.balanceDuration.isNegative -> "${formatHoursAndMinutes(report.balanceDuration.abs())} undertime"
         report.balanceDuration == Duration.ZERO -> "On target"
-        else -> "${formatHoursAndMinutes(report.balanceDuration)} ahead"
+        else -> "${formatHoursAndMinutes(report.balanceDuration)} overtime"
     }
 }
 
@@ -6233,34 +7620,88 @@ private fun formatAbsenceLabel(absence: AbsenceEntry): String {
     return absence.type.label
 }
 
-private fun colorForBalance(
+private fun chartBalanceColor(
     balanceDuration: Duration,
     expectedDuration: Duration,
 ): Color {
     return when {
-        expectedDuration == Duration.ZERO && balanceDuration > Duration.ZERO -> Color(0xFF2563EB)
         balanceDuration.isNegative -> Color(0xFFB42318)
+        expectedDuration == Duration.ZERO && balanceDuration == Duration.ZERO -> Color(0xFF9CA3AF)
         balanceDuration == Duration.ZERO -> Color(0xFF0F766E)
-        else -> Color(0xFF2563EB)
+        else -> Color(0xFF0F766E)
     }
 }
 
 private fun colorForDayStatus(status: DayVisualStatus): Color {
     return when (status) {
+        DayVisualStatus.HOLIDAY -> Color(0xFFF3E8FF)
+        DayVisualStatus.SICK_DAY -> Color(0xFFFEF3C7)
+        DayVisualStatus.PUBLIC_HOLIDAY -> Color(0xFF4B5563)
+        DayVisualStatus.NO_WORK -> Color(0xFFDBEAFE)
         DayVisualStatus.MISSING -> Color(0xFFFEE4E2)
         DayVisualStatus.ON_TARGET -> Color(0xFFD1FAE5)
-        DayVisualStatus.OVERTIME -> Color(0xFFDBEAFE)
+        DayVisualStatus.OVERTIME -> Color(0xFFD1FAE5)
         DayVisualStatus.NO_TARGET -> Color(0xFFF3F4F6)
     }
 }
 
 private fun colorForDayText(status: DayVisualStatus): Color {
     return when (status) {
+        DayVisualStatus.HOLIDAY -> Color(0xFF7E22CE)
+        DayVisualStatus.SICK_DAY -> Color(0xFF92400E)
+        DayVisualStatus.PUBLIC_HOLIDAY -> Color(0xFFFFFFFF)
+        DayVisualStatus.NO_WORK -> Color(0xFF1D4ED8)
         DayVisualStatus.MISSING -> Color(0xFFB42318)
         DayVisualStatus.ON_TARGET -> Color(0xFF047857)
-        DayVisualStatus.OVERTIME -> Color(0xFF1D4ED8)
+        DayVisualStatus.OVERTIME -> Color(0xFF047857)
         DayVisualStatus.NO_TARGET -> Color(0xFF4B5563)
     }
+}
+
+private fun trendColor(entry: MonthlyTrendEntry): Color {
+    return when {
+        !entry.hasRegisteredTime -> Color(0xFF9CA3AF)
+        entry.balanceDuration.isNegative -> Color(0xFFB42318)
+        entry.balanceDuration > Duration.ZERO -> Color(0xFF0F766E)
+        else -> Color(0xFF9CA3AF)
+    }
+}
+
+private fun calendarGridDays(
+    monthStart: LocalDate,
+    days: List<CalendarDayVisual>,
+): List<CalendarDayVisual?> {
+    val blanksBeforeMonth = monthStart.dayOfWeek.value - 1
+    val leadingDays = List(blanksBeforeMonth) { null }
+    val visibleDays = leadingDays + days
+    val blanksAfterMonth = (7 - visibleDays.size % 7) % 7
+    return visibleDays + List(blanksAfterMonth) { null }
+}
+
+private fun formatMonthLabel(monthStart: LocalDate): String {
+    val monthName = monthStart.month.getDisplayName(TextStyle.FULL, Locale.getDefault())
+    return "$monthName ${monthStart.year}"
+}
+
+private fun formatDotDate(date: LocalDate): String {
+    return "%02d.%02d.%04d".format(date.dayOfMonth, date.monthValue, date.year)
+}
+
+private fun formatWeekRangeLabel(startDate: LocalDate, endDate: LocalDate): String {
+    return "${formatShortDisplayDate(startDate)} - ${formatShortDisplayDate(endDate)}"
+}
+
+private fun formatShortDisplayDate(date: LocalDate): String {
+    val weekday = date.dayOfWeek.shortLabel()
+    val month = date.month.getDisplayName(TextStyle.SHORT, Locale.getDefault())
+    return "$weekday ${date.dayOfMonth}. $month ${"%02d".format(date.year % 100)}"
+}
+
+private fun rollingTrendStartDate(
+    weekCount: Int,
+    today: LocalDate = LocalDate.now(),
+): LocalDate {
+    return today.minusWeeks(weekCount.coerceIn(MIN_TREND_WEEK_COUNT, MAX_TREND_WEEK_COUNT).toLong()).plusDays(1)
 }
 
 private fun formatSignedBalance(duration: Duration): String {
@@ -6268,6 +7709,32 @@ private fun formatSignedBalance(duration: Duration): String {
         duration.isNegative -> "-${formatHoursAndMinutes(duration.abs())}"
         duration == Duration.ZERO -> "0h 00m"
         else -> "+${formatHoursAndMinutes(duration)}"
+    }
+}
+
+private fun formatSignedBalanceShort(duration: Duration): String {
+    return when {
+        duration.isNegative -> "-${formatDurationShort(duration.abs())}"
+        duration == Duration.ZERO -> "0h"
+        else -> "+${formatDurationShort(duration)}"
+    }
+}
+
+private fun formatSignedClockBalance(duration: Duration): String {
+    if (duration == Duration.ZERO) return "0:00"
+    val sign = if (duration.isNegative) "-" else "+"
+    val absolute = duration.abs()
+    val totalMinutes = absolute.toMinutes()
+    val hours = totalMinutes / 60
+    val minutes = totalMinutes % 60
+    return "$sign$hours:${"%02d".format(minutes)}"
+}
+
+private fun dailyBalanceSymbol(duration: Duration): String {
+    return when {
+        duration.isNegative -> "-"
+        duration > Duration.ZERO -> "+"
+        else -> "0"
     }
 }
 
@@ -6363,6 +7830,10 @@ private fun formatTimeInput(instant: Instant): String {
     return TIME_INPUT_FORMATTER.format(instant.atZone(ZoneId.systemDefault()).toLocalTime())
 }
 
+private fun formatLocalTime(time: LocalTime): String {
+    return TIME_INPUT_FORMATTER.format(time)
+}
+
 private fun formatDateInput(date: LocalDate): String {
     return DATE_INPUT_FORMATTER.format(date)
 }
@@ -6392,6 +7863,12 @@ private const val REMINDER_NOTIFICATION_CHANNEL_ID = "time_clock_reminders"
 private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1201
 private const val CLOCK_OUT_REMINDER_REQUEST_CODE = 1202
 private const val CLOCK_OUT_REMINDER_NOTIFICATION_ID = 1203
+private const val DEFAULT_TREND_WEEK_COUNT = 4
+private const val MIN_TREND_WEEK_COUNT = 1
+private const val MAX_TREND_WEEK_COUNT = 12
+private const val DEFAULT_DAILY_CHART_DAY_COUNT = 7
+private const val MIN_DAILY_CHART_DAY_COUNT = 7
+private const val MAX_DAILY_CHART_DAY_COUNT = 30
 private val DEFAULT_WORK_PROFILE = WorkProfile(
     id = DEFAULT_WORK_PROFILE_ID,
     name = DEFAULT_WORK_PROFILE_NAME,
@@ -6429,6 +7906,7 @@ private val WORK_DAYS_ROW_TWO = listOf(
     DayOfWeek.SATURDAY,
     DayOfWeek.SUNDAY,
 )
+private val WEEKDAY_LABELS = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 private val OVERTIME_RANGE_ROW_ONE = listOf(
     OvertimeRange.TODAY,
     OvertimeRange.ONE_WEEK,
@@ -6492,6 +7970,13 @@ private fun ClockedOutPreview() {
             onTodayOvertimeStartDateChange = {},
             onTodayOvertimeEndDateChange = {},
             onInsightsSectionSelect = {},
+            onChartMonthChange = {},
+            onTrendStartDateChange = {},
+            onTrendSettingsChange = { _, _, _ -> },
+            onDailyChartEndDateChange = {},
+            onDailyChartDayCountChange = {},
+            onChartVisibilityChange = { _, _ -> },
+            onChartMove = { _, _ -> },
             onExportExpandToggle = {},
             onProfileSelect = {},
             onProfileNameChange = {},
@@ -6585,6 +8070,13 @@ private fun ClockedInPreview() {
             onTodayOvertimeStartDateChange = {},
             onTodayOvertimeEndDateChange = {},
             onInsightsSectionSelect = {},
+            onChartMonthChange = {},
+            onTrendStartDateChange = {},
+            onTrendSettingsChange = { _, _, _ -> },
+            onDailyChartEndDateChange = {},
+            onDailyChartDayCountChange = {},
+            onChartVisibilityChange = { _, _ -> },
+            onChartMove = { _, _ -> },
             onExportExpandToggle = {},
             onProfileSelect = {},
             onProfileNameChange = {},

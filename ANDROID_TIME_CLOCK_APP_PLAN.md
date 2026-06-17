@@ -218,6 +218,9 @@ Consider:
 - Total actual hours
 - Overtime balance
 - Missing hours balance
+- Absence overview with vacation, sick day, public holiday, and other-absence totals by month or year
+- Average day length over a selected period
+- Start/end time consistency showing typical clock-in and clock-out times
 
 Implemented:
 
@@ -272,7 +275,7 @@ Consider:
 - Weekly progress chart
 - Monthly overtime trend
 - Calendar view with color-coded days
-- Green for enough hours, red for missing hours, blue for overtime
+- Green for overtime or on-target days, red for undertime, blue for other absence
 
 Implemented:
 
@@ -281,7 +284,7 @@ Implemented:
 - Weekly progress bar comparing actual and expected hours
 - Monthly overtime trend grouped by week
 - Current month color-coded day grid
-- Red for missing hours, green for on-target days, and blue for overtime days
+- Red for undertime, green for on-target or overtime days, and blue for other absence days
 
 ### 10. Work Profiles
 
@@ -468,16 +471,16 @@ Status: **Built in version 1.3.0**
 
 Goal:
 
-- Mark days as vacation/holiday, sick leave, absence, or no-work days
+- Mark days as vacation, sick leave, public holiday, or other-absence days
 - Prevent expected hours from becoming missing time on approved absence days
 - Keep reports, charts, history, and overtime balance fair when the user is away from work
 
 Consider:
 
-- Add holiday days
+- Add vacation days
+- Add public holidays for days when the workplace is closed
 - Add sick days
-- Treat vacation and holiday as the same absence type, using the British-English label `Holiday`
-- Add holiday date ranges with start and end dates
+- Add vacation date ranges with start and end dates
 - Let sickness be either one day or a date range
 - Add unpaid absence days
 - Mark days as not expected work days
@@ -491,25 +494,25 @@ Consider:
 Recommended first version:
 
 - Add absence entries for the active work profile
-- Support holiday, sick day, and no-work day
+- Support vacation, sick day, public holiday, and other-absence day
 - Support full-day entries first
-- Remove expected hours for no-work/unpaid absence days
-- Count holiday and sick days as covered days so they do not create missing hours
+- Remove expected hours for other absence/unpaid absence days
+- Count vacation, public holiday, and sick days as covered days so they do not create undertime
 - Show absence entries in History
 - Include absence adjustments in reports, charts, and overtime balance
 
 Implemented:
 
 - Profile-specific absence entries
-- Full-day holiday, sick day, and no-work entries
-- Holiday, sick-day, and no-work entries can all be one day or a date range
+- Full-day vacation, sick day, public holiday, and other-absence entries
+- Vacation, sick-day, public holiday, and other-absence entries can all be one day or a date range
 - Optional note on absence entries
 - Absence entry form opened from the bottom plus button
 - Absence entries shown in History, including days with no work sessions
 - Delete absence entries from History
 - Expected hours skipped on absence days
 - Reports, charts, history, today summary, long-session reminders, and overtime balance respect absence days
-- Older saved `TIME_OFF` entries are read safely as `No work`
+- Older saved `TIME_OFF` entries are read safely as `Other absence`
 
 Not implemented yet:
 
@@ -665,7 +668,7 @@ Implemented:
 - Includes selected overtime balance range and totals
 - Includes earnings estimates when available
 - Includes completed and active work sessions
-- Includes holiday, sick day, and no-work entries
+- Includes vacation, sick day, public holiday, and other-absence entries
 - Escapes CSV cells so notes and workplace names are spreadsheet-friendly
 
 ### 17. Small Fixes and Workflow Improvements
@@ -770,7 +773,7 @@ Consider:
 - Add a small data health/debug screen in Settings showing number of sessions, absences, profiles, and last backup status
 - Add confirmation or undo for destructive actions such as deleting sessions, absences, profiles, and exports
 - Add an onboarding checklist for first setup: workplace name, start date, expected weekly hours, workdays, lunch, reminders, and backup
-- Review wording consistency, such as `Holiday`, `Overtime Summary`, `Actual`, `Expected`, and `Balance`
+- Review wording consistency, such as `Vacation`, `Public holiday`, `Overtime Summary`, `Actual`, `Target`, and `Balance`
 - Improve accessibility: larger tap targets, screen-reader labels, contrast checks, and readable text sizes
 - Add app version number and changelog screen
 - Add a safe migration path before moving from SharedPreferences to Room
@@ -811,12 +814,36 @@ Implemented so far:
 - Show the exact date range used by Today Overtime Summary
 - Removed duplicate overtime fields from Today Overtime Summary
 - Made positive overtime consistently green and negative overtime consistently red
-- Simplified absence types to `Holiday`, `Sick day`, and `No work`
+- Simplified absence types to `Vacation`, `Sick day`, `Public holiday`, and `Other absence`
 - Made all absence types support start and end dates
 - Removed the confusing `Time off` absence type
-- Renamed `Vacation / holiday` to `Holiday` for British-English wording
+- Renamed `Holiday` to `Vacation` and added `Public holiday` for days when the workplace is closed
 - Added a warning before clocking in on a day with registered absence, while still allowing clock-in if needed
 - Added a warning before saving absence over days that already contain work sessions
+- Made Charts the default Insights section and renamed Summary to Reports
+- Improved the monthly chart calendar with month navigation, month picking, absence colours, and tap-to-view day notes
+- Polished the monthly chart calendar with stable day-cell sizing, fixed month-navigation spacing, current-month shortcut, and updated OK/Over colours
+- Separated Charts into clearer cards and changed the old monthly overtime trend into a navigable 4-week trend with exactly four weekly bars
+- Refined the 4-week trend with clearer week labels, readable week date ranges, DD.MM.YYYY trend dates, and no-data handling for future weeks
+- Added trend settings for rolling periods ending today, fixed weekday starts, 1-12 week ranges, one-week navigation, and total overtime summary
+- Polished trend and monthly overview headers so titles, settings, dates, and shortcuts align cleanly without cramped wrapping
+- Added chart-level settings to show/hide Insights charts and change their order, plus range/settings controls for Daily overview and Period progress
+- Refined Daily overview for longer ranges with compact weekday labels, grey empty bars, and per-day overtime/missing balance labels
+- Improved Daily overview label density with no text for no-data days, plus/minus markers for 14/30 day views, and a total overtime summary
+- Removed Period progress, added a Today shortcut to Daily overview, simplified the weeks trend header, and added a This week shortcut plus year labels under weekly bars
+- Clarified Daily overview with expected/worked legend, compact `+4:32` style balances, and renamed Weekly overview
+- Added Work pattern heatmap showing average worked time by weekday
+- Refined Daily overview into a clearer worked-hours graph with actual-height bars, overtime/undertime colours, a Daily target line, and `Pick start date` wording
+- Extended Work pattern with average worked-time patterns by month and by year
+- Fixed Daily overview so the Daily target line only appears on days with expected hours
+- Added Reports summaries for absence totals, average day length, and typical start/end times
+- Updated Monthly overview colours so exact target days use green and registered Other absence days use blue
+- Renamed chart labels from Over/Under/Missing to Overtime and Undertime
+- Standardized UI wording and colours: Target for visual comparisons, Overtime/Undertime for balances, green for on-target/overtime, red for undertime, blue for Other absence
+- Added Daily target lines to Work pattern bars so weekday, month, and year averages can be compared against expected work time
+- Added `Public holiday` as a separate absence type and renamed the old Holiday label to `Vacation` in Monthly overview, reports, history, and exports
+- Reordered Monthly overview categories and changed Public holiday to dark grey
+- Marked absence overview, average day length, and start/end time consistency as future Reports ideas
 - Updated export wording from `absences/time off` to `absences`
 - Enabled Android Auto Backup so app data has system-level backup support
 
